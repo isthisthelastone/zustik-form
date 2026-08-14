@@ -64,7 +64,6 @@ export function assertZustikDefinition(
     readonly fields: readonly { readonly name: string }[];
     readonly formId?: string;
     readonly formPostfix: string;
-    readonly cloneValues?: unknown;
     readonly onReset?: unknown;
     readonly onSubmit: unknown;
     readonly options?: Readonly<Record<string, unknown>>;
@@ -102,11 +101,10 @@ export function assertZustikDefinition(
   ) {
     throw new TypeError("onReset must be a function when provided.");
   }
-  if (
-    definition.cloneValues !== undefined &&
-    typeof definition.cloneValues !== "function"
-  ) {
-    throw new TypeError("cloneValues must be a function when provided.");
+  if (Object.prototype.hasOwnProperty.call(definition, "cloneValues")) {
+    throw new TypeError(
+      "cloneValues is not supported. Form values must be structured-cloneable.",
+    );
   }
   if (definition.options !== undefined) {
     if (
@@ -243,23 +241,19 @@ export function assertZustikDefinition(
 
 export function cloneZustikValues<TValues extends object>(
   values: Readonly<TValues>,
-  cloneValues?: (values: Readonly<TValues>) => TValues,
 ): TValues {
   let cloned: TValues;
   try {
-    cloned =
-      cloneValues === undefined
-        ? structuredClone(values)
-        : cloneValues(values);
+    cloned = structuredClone(values);
   } catch (error) {
     throw new TypeError(
-      "Could not clone form values. Provide cloneValues for values that are not structured-cloneable.",
+      "Could not clone form values. Form values must be structured-cloneable.",
       { cause: error },
     );
   }
 
   if (cloned === null || typeof cloned !== "object" || Array.isArray(cloned)) {
-    throw new TypeError("cloneValues must return a non-null object.");
+    throw new TypeError("Form values must be a non-null object.");
   }
   return cloned;
 }
@@ -349,10 +343,7 @@ export function defineZustikForm(
 
   return {
     ...definition,
-    defaultValues: cloneZustikValues(
-      definition.defaultValues,
-      definition.cloneValues,
-    ),
+    defaultValues: cloneZustikValues(definition.defaultValues),
     fields: definition.fields.map((field: {
       readonly componentProps?: Readonly<Record<string, unknown>>;
       readonly dependsOn?: readonly string[];

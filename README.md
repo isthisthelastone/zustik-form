@@ -22,8 +22,7 @@ rendered, replaced, reset, and destroyed.
 - ESM. Use `import`; CommonJS `require()` is not supported.
 - TypeScript 5.0 or newer for the published declarations. The project is built
   and tested with TypeScript 7.0.2.
-- A runtime with `structuredClone` when the default value-cloning behavior is
-  used. A custom `cloneValues` function can be supplied for other value types.
+- A runtime with `structuredClone`. Form values must be structured-cloneable.
 
 ## Installation
 
@@ -610,30 +609,20 @@ The input object is cloned before use. A later reset returns to these latest
 initial values. `options.keepDirtyOnReinitialize` controls Final Form's behavior
 for dirty fields during initialization.
 
-## Value isolation and `cloneValues`
+## Value isolation and cloning
 
 Definitions, form creation, and `initialize()` isolate values with
-`structuredClone` by default. Mutating a source defaults object after definition
-or an initialization object after calling `initialize()` does not mutate the
-live form.
+`structuredClone`. Mutating a source defaults object after definition or an
+initialization object after calling `initialize()` does not mutate the live form.
 
-Use `cloneValues` for classes, functions, platform objects, or other values that
-cannot be structured-cloned, or when the application needs custom semantics:
+Values may contain deeply nested objects and arrays, but they must remain
+structured-cloneable data. Functions, weak collections, DOM nodes, React
+elements, and objects that depend on custom class prototypes are not supported
+as form values. Treat callback context values and live form snapshots as readonly
+even when JavaScript cannot enforce it.
 
-```ts
-const definition = defineZustikForm({
-  formPostfix: "CustomValues",
-  defaultValues: { /* ... */ },
-  cloneValues: (values) => customClone(values),
-  fields: [/* ... */],
-  onSubmit: () => undefined,
-});
-```
-
-The custom function must return a non-null object. Treat callback context values
-and live form snapshots as readonly even when JavaScript cannot enforce it.
-Field definitions and `componentProps` are shallow-copied because they may
-contain functions, React nodes, and other non-cloneable objects; treat nested
+Field definitions and `componentProps` are shallow-copied because configuration
+may contain functions, React nodes, and other non-cloneable objects; treat nested
 configuration objects as immutable after defining the form.
 
 ## Form lifecycle
@@ -864,7 +853,6 @@ All five names receive the optional action postfix when one is supplied.
 | `validationSchema` | Optional synchronous or asynchronous Valibot object-input schema. |
 | `onReset` | Optional additional action run after reset is published. |
 | `formId` | Optional explicit HTML-safe ID; otherwise generated per manager. |
-| `cloneValues` | Optional custom replacement for default `structuredClone`. |
 | `options` | Optional Final Form behavior settings. |
 
 ### Form view-model

@@ -420,6 +420,56 @@ test("deep-clones defaults and initialized values", () => {
   );
 });
 
+test("requires structured-cloneable form values", () => {
+  assert.throws(
+    () =>
+      defineZustikForm({
+        defaultValues: {
+          profile: { name: "Original" },
+          transform: () => undefined,
+        },
+        fields: [{ name: "profile.name" }],
+        formPostfix: "NonCloneable",
+        onSubmit: () => undefined,
+      }),
+    /structured-cloneable/,
+  );
+
+  assert.throws(
+    () =>
+      defineZustikForm({
+        cloneValues: (values) => ({ ...values }),
+        defaultValues: { value: "" },
+        fields: [{ name: "value" }],
+        formPostfix: "CustomClone",
+        onSubmit: () => undefined,
+      }),
+    /cloneValues is not supported/,
+  );
+
+  const store = createManager();
+  store.getState().createForm({
+    defaultValues: { value: "Original" },
+    fields: [{ name: "value" }],
+    formPostfix: "StructuredValues",
+    onSubmit: () => undefined,
+  });
+
+  const form = store.getState().zustikFormStructuredValues.form;
+  assert.throws(
+    () =>
+      form.initialize({
+        transform: () => undefined,
+        value: "Changed",
+      }),
+    /structured-cloneable/,
+  );
+  assert.equal(
+    store.getState().zustikFormStructuredValues.form.values.value,
+    "Original",
+  );
+});
+
 test("preserves component collection references for unrelated field state", () => {
   const store = createManager();
   store.getState().createForm(makeCommentDefinition());

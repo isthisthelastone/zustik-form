@@ -85,9 +85,6 @@ interface RuntimeFieldDefinition {
 }
 
 interface RuntimeDefinition {
-  readonly cloneValues?: (
-    values: Readonly<RuntimeValues>,
-  ) => RuntimeValues;
   readonly defaultValues: RuntimeValues;
   readonly fields: readonly RuntimeFieldDefinition[];
   readonly formId?: string;
@@ -195,10 +192,9 @@ function shallowCopyValues(values: object): RuntimeValues {
 }
 
 function cloneRuntimeValues(
-  definition: RuntimeDefinition,
   values: Readonly<RuntimeValues>,
 ): RuntimeValues {
-  return cloneZustikValues(values, definition.cloneValues);
+  return cloneZustikValues(values);
 }
 
 function prepareDefinition(definition: RuntimeDefinition): RuntimeDefinition {
@@ -215,10 +211,7 @@ function prepareDefinition(definition: RuntimeDefinition): RuntimeDefinition {
 
   return {
     ...definition,
-    defaultValues: cloneRuntimeValues(
-      definition,
-      definition.defaultValues,
-    ),
+    defaultValues: cloneRuntimeValues(definition.defaultValues),
     fields: definition.fields.map((field) => {
       const componentProps = field.componentProps;
       return {
@@ -654,7 +647,7 @@ function createRuntimeCommands(
     },
     initialize: (values) => {
       if (isCurrent()) {
-        runtime.api.initialize(cloneRuntimeValues(runtime.definition, values));
+        runtime.api.initialize(cloneRuntimeValues(values));
       }
     },
     onReset: async (event) => {

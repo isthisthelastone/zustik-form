@@ -1,6 +1,6 @@
 {
   "name": "zustik-form",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Typed dynamic form view-models for Zustand, powered by vanilla Final Form and Valibot.",
   "type": "module",
   "main": "./dist/index.js",

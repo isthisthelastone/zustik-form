@@ -334,8 +334,6 @@ interface ZustikFormDefinitionBase<
   TOutput,
   TFields extends readonly ZustikNamedField<TInput>[],
 > {
-  /** Overrides the default structured clone used to isolate initial values. */
-  readonly cloneValues?: (values: Readonly<TInput>) => TInput;
   readonly defaultValues: TInput;
   readonly fields: TFields;
   /** Stable identifier. A per-store identifier is generated when omitted. */
