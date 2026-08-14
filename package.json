@@ -37,9 +37,22 @@
     "valibot",
     "typescript",
     "react",
-    "mvvm"
+    "mvvm",
+    "state-management",
+    "form-state",
+    "form-validation",
+    "schema-validation",
+    "headless"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/isthisthelastone/zustik-form.git"
+  },
+  "homepage": "https://github.com/isthisthelastone/zustik-form#readme",
+  "bugs": {
+    "url": "https://github.com/isthisthelastone/zustik-form/issues"
+  },
   "packageManager": "pnpm@11.21.0",
   "engines": {
     "node": ">=18"
