@@ -1,0 +1,65 @@
+{
+  "name": "zustik-form",
+  "version": "0.1.0",
+  "description": "Typed dynamic form view-models for Zustand, powered by vanilla Final Form and Valibot.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "clean": "node scripts/clean.mjs",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "dev": "npm run build && node examples/grocery/server.mjs",
+    "check:example": "node --check examples/grocery/app.js && node examples/grocery/server.mjs --check",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && tsc -p test-package/tsconfig.json --noEmit && node --test test/*.test.mjs",
+    "check": "npm run typecheck && npm run test && npm run check:example",
+    "prepack": "npm run check"
+  },
+  "keywords": [
+    "zustand",
+    "form",
+    "final-form",
+    "valibot",
+    "typescript",
+    "react",
+    "mvvm"
+  ],
+  "license": "MIT",
+  "packageManager": "pnpm@11.21.0",
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "final-form": "^5.0.1",
+    "valibot": "^1.4.2"
+  },
+  "peerDependencies": {
+    "react": "18.3.1",
+    "zustand": ">=5.0.0 <6.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "18.3.31",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "typescript": "7.0.2",
+    "zustand": "5.0.15"
+  }
+}
