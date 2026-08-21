@@ -1,16 +1,6 @@
 import type { ComponentType } from "react";
 
-import type {
-  AnyZustikSchema,
-  FieldPath,
-  SchemaInput,
-  SchemaOutput,
-  ZustikComponentFieldDefinition,
-  ZustikFieldDefinition,
-  ZustikFormDefinition,
-  ZustikHeadlessFieldDefinition,
-  ZustikNamedField,
-} from "./types.js";
+import type { AnyZustikSchema } from "./types.js";
 
 const POSTFIX_PATTERN = /^[A-Za-z][A-Za-z0-9]*$/;
 const FORM_ID_PATTERN = /^[A-Za-z][A-Za-z0-9:._-]*$/;
@@ -20,6 +10,72 @@ const UNSAFE_FIELD_SEGMENTS = new Set([
   "constructor",
   "prototype",
 ]);
+
+export interface RuntimeFieldDefinition {
+  readonly component?: ComponentType<any>;
+  readonly dependsOn?: readonly string[];
+  readonly isEqual?: (previous: unknown, next: unknown) => boolean;
+  readonly mapProps?: (context: {
+    readonly field: unknown;
+    readonly input: unknown;
+    readonly props: Readonly<Record<string, unknown>>;
+    readonly values: Readonly<Record<string, unknown>>;
+  }) => Record<string, unknown>;
+  readonly name: string;
+  readonly props?: Readonly<Record<string, unknown>>;
+  readonly renderKey?: string | number | bigint;
+  readonly valueFromChange?: (...args: readonly unknown[]) => unknown;
+}
+
+export interface RuntimeDefinition {
+  readonly defaultValues: Record<string, unknown>;
+  readonly fields: readonly RuntimeFieldDefinition[];
+  readonly formId: string;
+  readonly formPostfix: string;
+  readonly onReset?: (context: {
+    readonly formApi: unknown;
+    readonly formId: string;
+    readonly formPostfix: string;
+    readonly initialValues: Readonly<Record<string, unknown>>;
+    readonly previousValues: Readonly<Record<string, unknown>>;
+  }) => void | Promise<void>;
+  readonly onSubmit: (
+    values: unknown,
+    context: {
+      readonly formApi: unknown;
+      readonly formId: string;
+      readonly formPostfix: string;
+      readonly inputValues: Readonly<Record<string, unknown>>;
+    },
+  ) => unknown;
+  readonly options?: Readonly<{
+    readonly destroyOnUnregister?: boolean;
+    readonly keepDirtyOnReinitialize?: boolean;
+    readonly validateOnBlur?: boolean;
+  }>;
+  readonly validationSchema?: AnyZustikSchema;
+}
+
+interface RawFieldDefinition {
+  readonly component?: unknown;
+  readonly dependsOn?: unknown;
+  readonly isEqual?: unknown;
+  readonly mapProps?: unknown;
+  readonly props?: unknown;
+  readonly renderKey?: unknown;
+  readonly valueFromChange?: unknown;
+}
+
+interface RawDefinition {
+  readonly defaultValues: Record<string, unknown>;
+  readonly fields: Readonly<Record<string, RawFieldDefinition>>;
+  readonly formId?: string;
+  readonly formPostfix: string;
+  readonly onReset?: unknown;
+  readonly onSubmit: unknown;
+  readonly options?: Readonly<Record<string, unknown>>;
+  readonly validationSchema?: unknown;
+}
 
 function assertFieldPath(path: string, label: string): void {
   const segments = path.split(".");
@@ -40,7 +96,8 @@ function hasOwnPath(values: object, path: string): boolean {
   let current: unknown = values;
   for (const segment of path.split(".")) {
     if (
-      (typeof current !== "object" || current === null) ||
+      typeof current !== "object" ||
+      current === null ||
       !Object.prototype.hasOwnProperty.call(current, segment)
     ) {
       return false;
@@ -58,17 +115,11 @@ export function assertZustikPostfix(postfix: string, label: string): void {
   }
 }
 
-export function assertZustikDefinition(
-  definition: {
-    readonly defaultValues: object;
-    readonly fields: readonly { readonly name: string }[];
-    readonly formId?: string;
-    readonly formPostfix: string;
-    readonly onReset?: unknown;
-    readonly onSubmit: unknown;
-    readonly options?: Readonly<Record<string, unknown>>;
-  },
-): void {
+function assertDefinitionShape(definition: RawDefinition): void {
+  if (definition === null || typeof definition !== "object") {
+    throw new TypeError("The form configuration must be an object.");
+  }
+
   assertZustikPostfix(definition.formPostfix, "formPostfix");
 
   if (
@@ -88,8 +139,12 @@ export function assertZustikDefinition(
     throw new TypeError("defaultValues must be a non-null object.");
   }
 
-  if (!Array.isArray(definition.fields)) {
-    throw new TypeError("fields must be an array.");
+  if (
+    definition.fields === null ||
+    typeof definition.fields !== "object" ||
+    Array.isArray(definition.fields)
+  ) {
+    throw new TypeError("fields must be an object keyed by field path.");
   }
 
   if (typeof definition.onSubmit !== "function") {
@@ -106,6 +161,7 @@ export function assertZustikDefinition(
       "cloneValues is not supported. Form values must be structured-cloneable.",
     );
   }
+
   if (definition.options !== undefined) {
     if (
       definition.options === null ||
@@ -126,113 +182,103 @@ export function assertZustikDefinition(
     }
   }
 
-  const names = new Set<string>();
-  for (const field of definition.fields) {
-    if (
-      field === null ||
-      typeof field !== "object" ||
-      typeof field.name !== "string" ||
-      field.name.length === 0
-    ) {
-      throw new TypeError("Every field must have a non-empty string name.");
-    }
+  if (
+    definition.validationSchema !== undefined &&
+    (definition.validationSchema === null ||
+      typeof definition.validationSchema !== "object" ||
+      !("~run" in definition.validationSchema))
+  ) {
+    throw new TypeError("validationSchema must be a Valibot schema.");
+  }
+}
 
-    assertFieldPath(field.name, "field name");
-    if (!hasOwnPath(definition.defaultValues, field.name)) {
-      throw new TypeError(
-        `Field ${JSON.stringify(field.name)} does not exist in defaultValues.`,
-      );
-    }
+function assertFieldDefinition(
+  name: string,
+  field: RawFieldDefinition,
+  defaultValues: object,
+): void {
+  if (name.length === 0) {
+    throw new TypeError("Every field key must be a non-empty string.");
+  }
+  assertFieldPath(name, "field name");
+  if (!hasOwnPath(defaultValues, name)) {
+    throw new TypeError(
+      `Field ${JSON.stringify(name)} does not exist in defaultValues.`,
+    );
+  }
+  if (field === null || typeof field !== "object" || Array.isArray(field)) {
+    throw new TypeError(
+      `Field ${JSON.stringify(name)} must be configured with an object.`,
+    );
+  }
 
-    if (names.has(field.name)) {
-      throw new TypeError(`Duplicate field name ${JSON.stringify(field.name)}.`);
-    }
-    names.add(field.name);
+  if (
+    field.component !== undefined &&
+    typeof field.component !== "function" &&
+    (typeof field.component !== "object" || field.component === null)
+  ) {
+    throw new TypeError(
+      `component for ${JSON.stringify(name)} must be a React component.`,
+    );
+  }
 
-    const runtimeField = field as {
-      readonly component?: unknown;
-      readonly componentProps?: unknown;
-      readonly controlledProps?: unknown;
-      readonly dependsOn?: unknown;
-      readonly isEqual?: unknown;
-      readonly mapComponentProps?: unknown;
-      readonly valueFromChange?: unknown;
-    };
-    if (
-      runtimeField.component !== undefined &&
-      typeof runtimeField.component !== "function" &&
-      (typeof runtimeField.component !== "object" ||
-        runtimeField.component === null)
-    ) {
+  if (
+    field.component === undefined &&
+    (field.props !== undefined ||
+      field.mapProps !== undefined ||
+      field.renderKey !== undefined)
+  ) {
+    throw new TypeError(
+      `props, mapProps, and renderKey for ${JSON.stringify(name)} require a component.`,
+    );
+  }
+
+  if (
+    field.props !== undefined &&
+    (field.props === null ||
+      typeof field.props !== "object" ||
+      Array.isArray(field.props))
+  ) {
+    throw new TypeError(`props for ${JSON.stringify(name)} must be an object.`);
+  }
+
+  for (const [key, value] of [
+    ["isEqual", field.isEqual],
+    ["mapProps", field.mapProps],
+    ["valueFromChange", field.valueFromChange],
+  ] as const) {
+    if (value !== undefined && typeof value !== "function") {
       throw new TypeError(
-        `component for ${JSON.stringify(field.name)} must be a React component.`,
+        `${key} for ${JSON.stringify(name)} must be a function.`,
       );
     }
+  }
+
+  if (field.mapProps !== undefined && field.valueFromChange !== undefined) {
+    throw new TypeError(
+      `valueFromChange cannot be combined with mapProps for ${JSON.stringify(name)}.`,
+    );
+  }
+
+  if (field.dependsOn !== undefined) {
     if (
-      runtimeField.component === undefined &&
-      (runtimeField.componentProps !== undefined ||
-        runtimeField.controlledProps !== undefined ||
-        runtimeField.mapComponentProps !== undefined ||
-        runtimeField.valueFromChange !== undefined)
+      !Array.isArray(field.dependsOn) ||
+      field.dependsOn.some((path) => typeof path !== "string")
     ) {
       throw new TypeError(
-        `Component binding options for ${JSON.stringify(field.name)} require a component.`,
+        `dependsOn for ${JSON.stringify(name)} must be an array of field paths.`,
       );
     }
-    if (
-      runtimeField.componentProps !== undefined &&
-      (runtimeField.componentProps === null ||
-        typeof runtimeField.componentProps !== "object" ||
-        Array.isArray(runtimeField.componentProps))
-    ) {
+    if (field.mapProps === undefined) {
       throw new TypeError(
-        `componentProps for ${JSON.stringify(field.name)} must be an object.`,
+        `dependsOn for ${JSON.stringify(name)} requires mapProps.`,
       );
     }
-    for (const [key, value] of [
-      ["isEqual", runtimeField.isEqual],
-      ["mapComponentProps", runtimeField.mapComponentProps],
-      ["valueFromChange", runtimeField.valueFromChange],
-    ] as const) {
-      if (value !== undefined && typeof value !== "function") {
+    for (const path of field.dependsOn as readonly string[]) {
+      assertFieldPath(path, "dependsOn path");
+      if (!hasOwnPath(defaultValues, path)) {
         throw new TypeError(
-          `${key} for ${JSON.stringify(field.name)} must be a function.`,
-        );
-      }
-    }
-    if (runtimeField.dependsOn !== undefined) {
-      if (
-        !Array.isArray(runtimeField.dependsOn) ||
-        runtimeField.dependsOn.some((path) => typeof path !== "string")
-      ) {
-        throw new TypeError(
-          `dependsOn for ${JSON.stringify(field.name)} must be an array of field paths.`,
-        );
-      }
-      for (const path of runtimeField.dependsOn as readonly string[]) {
-        assertFieldPath(path, "dependsOn path");
-        if (!hasOwnPath(definition.defaultValues, path)) {
-          throw new TypeError(
-            `Dependency ${JSON.stringify(path)} does not exist in defaultValues.`,
-          );
-        }
-      }
-    }
-    if (runtimeField.controlledProps !== undefined) {
-      if (
-        !Array.isArray(runtimeField.controlledProps) ||
-        runtimeField.controlledProps.length === 0 ||
-        runtimeField.controlledProps.some(
-          (prop) => typeof prop !== "string" || prop.length === 0,
-        )
-      ) {
-        throw new TypeError(
-          `controlledProps for ${JSON.stringify(field.name)} must be a non-empty array of prop names.`,
-        );
-      }
-      if (typeof runtimeField.mapComponentProps !== "function") {
-        throw new TypeError(
-          `mapComponentProps is required when controlledProps are declared for ${JSON.stringify(field.name)}.`,
+          `Dependency ${JSON.stringify(path)} does not exist in defaultValues.`,
         );
       }
     }
@@ -258,101 +304,67 @@ export function cloneZustikValues<TValues extends object>(
   return cloned;
 }
 
-export interface ZustikFieldBuilder<TValues extends object> {
-  <const TName extends FieldPath<TValues>>(
-    definition: ZustikHeadlessFieldDefinition<TValues, TName>,
-  ): ZustikHeadlessFieldDefinition<TValues, TName>;
+/** Validates and snapshots a user configuration for a static form factory. */
+export function prepareZustikDefinition(
+  rawDefinition: RawDefinition,
+): RuntimeDefinition {
+  assertDefinitionShape(rawDefinition);
 
-  <
-    const TName extends FieldPath<TValues>,
-    const TComponent extends ComponentType<any>,
-    const TControlled extends keyof import("./types.js").PropsOf<TComponent> =
-      Extract<
-        "name" | "onBlur" | "onChange" | "onFocus" | "value",
-        keyof import("./types.js").PropsOf<TComponent>
-      >,
-  >(
-    definition: ZustikComponentFieldDefinition<
-      TValues,
-      TName,
-      TComponent,
-      TControlled
-    >,
-  ): ZustikComponentFieldDefinition<
-    TValues,
-    TName,
-    TComponent,
-    TControlled
-  >;
+  const defaultValues = cloneZustikValues(rawDefinition.defaultValues);
+  const fields: RuntimeFieldDefinition[] = [];
+  for (const [name, field] of Object.entries(rawDefinition.fields)) {
+    assertFieldDefinition(name, field, defaultValues);
+    fields.push({
+      ...field,
+      name,
+      ...(field.props === undefined ? {} : { props: { ...field.props } }),
+      ...(field.dependsOn === undefined
+        ? {}
+        : {
+            dependsOn: [
+              ...(field.dependsOn as readonly string[]),
+            ] as readonly string[],
+          }),
+    } as RuntimeFieldDefinition);
+  }
+
+  const formId = rawDefinition.formId ?? `zustik-${rawDefinition.formPostfix}`;
+  return {
+    defaultValues,
+    fields,
+    formId,
+    formPostfix: rawDefinition.formPostfix,
+    ...(rawDefinition.onReset === undefined
+      ? {}
+      : {
+          onReset: rawDefinition.onReset as Exclude<
+            RuntimeDefinition["onReset"],
+            undefined
+          >,
+        }),
+    onSubmit: rawDefinition.onSubmit as RuntimeDefinition["onSubmit"],
+    ...(rawDefinition.options === undefined
+      ? {}
+      : { options: { ...rawDefinition.options } }),
+    ...(rawDefinition.validationSchema === undefined
+      ? {}
+      : {
+          validationSchema:
+            rawDefinition.validationSchema as AnyZustikSchema,
+        }),
+  };
 }
 
-/**
- * Creates a field builder bound to a form value type. The function is an
- * identity at runtime and exists to preserve field names and component props.
- */
-export function defineZustikField<
-  TValues extends object,
->(): ZustikFieldBuilder<TValues> {
-  return ((definition: unknown) => definition) as ZustikFieldBuilder<TValues>;
-}
-
-export function defineZustikForm<
-  const TPostfix extends string,
-  const TSchema extends AnyZustikSchema,
-  const TFields extends readonly ZustikNamedField<SchemaInput<TSchema>>[],
->(
-  definition: ZustikFormDefinition<
-    TPostfix,
-    SchemaInput<TSchema>,
-    SchemaOutput<TSchema>,
-    TFields,
-    TSchema
-  > & { readonly validationSchema: TSchema },
-): ZustikFormDefinition<
-  TPostfix,
-  SchemaInput<TSchema>,
-  SchemaOutput<TSchema>,
-  TFields,
-  TSchema
->;
-
-export function defineZustikForm<
-  const TPostfix extends string,
-  TInput extends object,
-  const TFields extends readonly ZustikNamedField<TInput>[],
->(
-  definition: ZustikFormDefinition<
-    TPostfix,
-    TInput,
-    TInput,
-    TFields,
-    undefined
-  >,
-): ZustikFormDefinition<
-  TPostfix,
-  TInput,
-  TInput,
-  TFields,
-  undefined
->;
-
-export function defineZustikForm(
-  definition: any,
-): any {
-  assertZustikDefinition(definition);
-
+/** Creates a fresh per-store copy from an already validated definition. */
+export function clonePreparedZustikDefinition(
+  definition: RuntimeDefinition,
+): RuntimeDefinition {
   return {
     ...definition,
     defaultValues: cloneZustikValues(definition.defaultValues),
-    fields: definition.fields.map((field: {
-      readonly componentProps?: Readonly<Record<string, unknown>>;
-      readonly dependsOn?: readonly string[];
-      readonly [key: string]: unknown;
-    }) => ({
+    fields: definition.fields.map((field) => ({
       ...field,
-      ...(field.componentProps === undefined
-        ? {}
-        : { componentProps: { ...field.componentProps } }),
+      ...(field.props === undefined ? {} : { props: { ...field.props } }),
       ...(field.dependsOn === undefined
         ? {}
         : { dependsOn: [...field.dependsOn] }),
@@ -363,14 +375,12 @@ export function defineZustikForm(
   };
 }
 
-/** Extracts `currentTarget.value` from a DOM or MUI-style change event. */
 export function valueFromEvent<TValue>(event: {
   readonly currentTarget: { readonly value: TValue };
 }): TValue {
   return event.currentTarget.value;
 }
 
-/** Extracts `currentTarget.checked` from a checkbox-style change event. */
 export function checkedFromEvent(event: {
   readonly currentTarget: { readonly checked: boolean };
 }): boolean {

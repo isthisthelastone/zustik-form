@@ -4,14 +4,13 @@ import { createStore } from "zustand/vanilla";
 
 import {
   FORM_ERROR,
-  defineZustikField,
-  defineZustikForm,
+  createZustikFormSlice,
   valueFromEvent,
   type FieldPath,
   type FieldPathValue,
-  zustikFormCreate,
   type InputOf,
   type OutputOf,
+  type ZustikComponentBindingContext,
   type ZustikFormSlice,
 } from "../src/index.js";
 
@@ -57,40 +56,45 @@ interface CheckboxProps {
 }
 
 const Checkbox: ComponentType<CheckboxProps> = () => null;
-const field = defineZustikField<CommentInput>();
 
-const commentDefinition = defineZustikForm({
+const createCommentFormSlice = createZustikFormSlice({
   defaultValues: {
     comment: "",
     notify: false,
     profile: { displayName: "" },
   },
-  fields: [
-    field({
+  fields: {
+    comment: {
       component: TextField,
-      componentProps: {
+      props: {
         fullWidth: true,
-        onBlur: (_event) => undefined,
+        onBlur: (_event: { readonly kind: "blur" }) => undefined,
       },
-      name: "comment",
       valueFromChange: valueFromEvent,
-    }),
-    field({
+    },
+    notify: {
       component: Checkbox,
-      componentProps: { label: "Notify me" },
-      controlledProps: ["name", "checked", "onChange"] as const,
-      mapComponentProps: ({ componentProps, field: fieldState, input }) => ({
-        ...componentProps,
-        checked: fieldState.value,
-        name: fieldState.name,
-        onChange: (event) => input.onChange(event.currentTarget.checked),
+      mapProps: ({
+        field,
+        input,
+        props,
+      }: ZustikComponentBindingContext<
+        CommentInput,
+        "notify",
+        typeof Checkbox
+      >) => ({
+        checked: field.value,
+        label: props.label ?? "Notify me",
+        name: field.name,
+        onChange: (event: Parameters<CheckboxProps["onChange"]>[0]) =>
+          input.onChange(event.currentTarget.checked),
       }),
-      name: "notify",
-    }),
-    field({ name: "profile.displayName" }),
-  ] as const,
-  formPostfix: "Comment",
+      props: { label: "Notify me" },
+    },
+    "profile.displayName": {},
+  },
   formId: "comment-form",
+  formPostfix: "Comment",
   onReset: (context) => {
     const value: string = context.previousValues.comment;
     const postfix: "Comment" = context.formPostfix;
@@ -108,9 +112,9 @@ const commentDefinition = defineZustikForm({
   validationSchema: CommentSchema,
 });
 
-type _Input = Expect<Equal<InputOf<typeof commentDefinition>, CommentInput>>;
+type _Input = Expect<Equal<InputOf<typeof createCommentFormSlice>, CommentInput>>;
 type _Output = Expect<
-  Equal<OutputOf<typeof commentDefinition>["comment"], number>
+  Equal<OutputOf<typeof createCommentFormSlice>["comment"], number>
 >;
 
 type OptionalValues = {
@@ -139,64 +143,67 @@ type _OptionalPathsExist = Expect<
   >
 >;
 
-interface Forms {
-  Comment: typeof commentDefinition;
-}
-
-type FormSlice = ZustikFormSlice<Forms>;
-type AppState = FormSlice & {
+type CommentFormSlice = ZustikFormSlice<typeof createCommentFormSlice>;
+type AppState = CommentFormSlice & {
   count: number;
   increment(): void;
 };
 
-const createFormsSlice = zustikFormCreate<Forms, AppState>();
 const store = createStore<AppState>()((set, get, api) => ({
-  ...createFormsSlice(set, get, api),
+  ...createCommentFormSlice(set, get, api),
   count: 0,
   increment: () => set((state) => ({ count: state.count + 1 })),
 }));
 
-store.getState().createForm(commentDefinition);
-const slot = store.getState().zustikFormComment;
-if (slot !== undefined) {
-  const comment: string = slot.form.values.comment;
-  const formId: string = slot.form.formId;
-  const fieldValue: string = slot.form.fields[0].value;
-  const fieldName: "comment" = slot.form.fields[0].name;
-  const formPostfix: "Comment" = slot.form.formPostfix;
-  const nestedValue: string = slot.form.fieldsByName["profile.displayName"].value;
-  const rootError: unknown = slot.form.errors?.[FORM_ERROR];
-  slot.form.fields[0].onChange("next");
-  slot.form.change("profile.displayName", "Grace");
-  void comment;
-  void formId;
-  void fieldValue;
-  void fieldName;
-  void formPostfix;
-  void nestedValue;
-  void rootError;
+const form = store.getState().zustikFormComment;
+const comment: string = form.values.comment;
+const formId: string = form.formId;
+const fieldValue: string = form.fields.comment.value;
+const fieldName: "comment" = form.fields.comment.name;
+const formPostfix: "Comment" = form.formPostfix;
+const nestedValue: string = form.fields["profile.displayName"].value;
+const rootError: unknown = form.errors?.[FORM_ERROR];
+const textFieldProps: Readonly<TextFieldProps> = form.fieldProps.comment;
+const checkboxProps: Readonly<CheckboxProps> = form.fieldProps.notify;
+const headlessName: "profile.displayName" =
+  form.fieldProps["profile.displayName"].name;
+const textFieldElement = form.components.comment;
+const checkboxElement = form.components.notify;
+form.fields.comment.onChange("next");
+form.setValue("profile.displayName", "Grace");
+void comment;
+void formId;
+void fieldValue;
+void fieldName;
+void formPostfix;
+void nestedValue;
+void rootError;
+void textFieldProps;
+void checkboxProps;
+void headlessName;
+void textFieldElement;
+void checkboxElement;
 
-  // @ts-expect-error comment is a string input, not a number
-  slot.form.fields[0].onChange(123);
-  // @ts-expect-error invalid field path
-  slot.form.change("missing", "value");
-}
+// @ts-expect-error headless fields do not produce React elements
+form.components["profile.displayName"];
+// @ts-expect-error comment is a string input, not a number
+form.fields.comment.onChange(123);
+// @ts-expect-error invalid field path
+form.setValue("missing", "value");
 
-// @ts-expect-error only declared form postfixes can be destroyed
-store.getState().destroyForm("Missing");
-
-// @ts-expect-error a component's required non-controlled props are required
-field({ component: TextField, name: "comment" });
-
-// @ts-expect-error custom controlled props require an explicit mapper
-field({ component: Checkbox, componentProps: { label: "Notify me" }, controlledProps: ["name", "checked", "onChange"] as const, name: "notify" });
-
-// @ts-expect-error field names are inferred from schema input
-field({ name: "doesNotExist" });
-
-const plainDefinition = defineZustikForm({
+createZustikFormSlice({
   defaultValues: { title: "" },
-  fields: [{ name: "title" }] as const,
+  fields: {
+    // @ts-expect-error props require a configured component
+    title: { props: { label: "Title" } },
+  },
+  formPostfix: "HeadlessProps",
+  onSubmit: () => undefined,
+});
+
+const createPlainFormSlice = createZustikFormSlice({
+  defaultValues: { title: "" },
+  fields: { title: {} },
   formPostfix: "Plain",
   onSubmit: (values) => {
     const title: string = values.title;
@@ -205,7 +212,7 @@ const plainDefinition = defineZustikForm({
 });
 
 type _Plain = Expect<
-  Equal<InputOf<typeof plainDefinition>, { title: string }>
+  Equal<InputOf<typeof createPlainFormSlice>, { title: string }>
 >;
 
 void store;

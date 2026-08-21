@@ -8,39 +8,33 @@ import {
   type Unsubscribe,
 } from "final-form";
 import { createElement, type ComponentType, type ReactElement } from "react";
-import type {
-  StateCreator,
-  StoreMutatorIdentifier,
-} from "zustand/vanilla";
 
 import {
-  assertZustikDefinition,
-  assertZustikPostfix,
+  clonePreparedZustikDefinition,
   cloneZustikValues,
+  prepareZustikDefinition,
+  type RuntimeDefinition,
+  type RuntimeFieldDefinition,
 } from "./definition.js";
 import type {
   AnyZustikSchema,
   FieldPath,
-  InputOf,
-  RegisteredDefinitionUnion,
+  LooseFieldsDefinition,
+  SchemaInput,
+  SchemaOutput,
   ZustikComponentBindingContext,
-  ZustikCreateFormOptions,
   ZustikDefaultFieldProps,
   ZustikFieldInput,
-  ZustikFieldRenderState,
+  ZustikFieldState,
   ZustikFieldView,
   ZustikFormDefinition,
-  ZustikFormSlice,
-  ZustikFormSlot,
+  ZustikFormSliceFactory,
   ZustikFormView,
   ZustikPreventableEvent,
   ZustikSubmitResult,
 } from "./types.js";
 import { ZUSTIK_FIELD_SUBSCRIPTION } from "./types.js";
-import {
-  parseWithSchema,
-  validateWithSchema,
-} from "./validation.js";
+import { parseWithSchema, validateWithSchema } from "./validation.js";
 
 const FORM_SUBSCRIPTION: Readonly<Required<FormSubscription>> = {
   active: true,
@@ -70,48 +64,6 @@ const FORM_SUBSCRIPTION: Readonly<Required<FormSubscription>> = {
 };
 
 type RuntimeValues = Record<string, unknown>;
-
-interface RuntimeFieldDefinition {
-  readonly component?: ComponentType<any>;
-  readonly componentProps?: Readonly<Record<string, unknown>>;
-  readonly dependsOn?: readonly string[];
-  readonly isEqual?: (previous: unknown, next: unknown) => boolean;
-  readonly mapComponentProps?: (
-    context: ZustikComponentBindingContext<any, any, any>,
-  ) => Record<string, unknown>;
-  readonly name: string;
-  readonly renderKey?: string | number | bigint;
-  readonly valueFromChange?: (...args: readonly unknown[]) => unknown;
-}
-
-interface RuntimeDefinition {
-  readonly defaultValues: RuntimeValues;
-  readonly fields: readonly RuntimeFieldDefinition[];
-  readonly formId?: string;
-  readonly formPostfix: string;
-  readonly onReset?: (context: {
-    readonly formApi: FormApi<RuntimeValues>;
-    readonly formId: string;
-    readonly formPostfix: string;
-    readonly initialValues: Readonly<RuntimeValues>;
-    readonly previousValues: Readonly<RuntimeValues>;
-  }) => void | Promise<void>;
-  readonly onSubmit: (
-    values: unknown,
-    context: {
-      readonly formApi: FormApi<RuntimeValues>;
-      readonly formId: string;
-      readonly formPostfix: string;
-      readonly inputValues: Readonly<RuntimeValues>;
-    },
-  ) => unknown;
-  readonly options?: Readonly<{
-    readonly destroyOnUnregister?: boolean;
-    readonly keepDirtyOnReinitialize?: boolean;
-    readonly validateOnBlur?: boolean;
-  }>;
-  readonly validationSchema?: AnyZustikSchema;
-}
 
 interface RuntimeField {
   readonly componentOnBlur: (...args: readonly unknown[]) => void;
@@ -148,44 +100,64 @@ interface FormRuntime {
   active: boolean;
   readonly api: FormApi<RuntimeValues>;
   readonly commands: RuntimeCommands;
-  componentsView: readonly ReactElement[] | undefined;
+  componentsView: Readonly<Record<string, ReactElement>> | undefined;
   readonly definition: RuntimeDefinition;
+  fieldPropsView: Readonly<Record<string, object>> | undefined;
   readonly fields: readonly RuntimeField[];
-  fieldsByNameView:
+  fieldsView:
     | Readonly<
-        Record<
-          string,
-          ZustikFieldView<unknown, Record<string, unknown>>
-        >
+        Record<string, ZustikFieldView<unknown, Record<string, unknown>>>
       >
     | undefined;
-  fieldsView:
-    | readonly ZustikFieldView<unknown, Record<string, unknown>>[]
-    | undefined;
-  readonly generation: number;
-  readonly stateKey: string;
-  pendingSlot: ZustikFormSlot<RuntimeDefinition> | undefined;
+  pendingForm: ZustikFormView<RuntimeDefinition> | undefined;
+  pendingSubmit: Promise<ZustikSubmitResult<RuntimeValues>> | undefined;
   projectionErrorsView: Readonly<Record<string, unknown>> | undefined;
   publicSubmitAttempt: RuntimeSubmitAttempt | undefined;
-  pendingSubmit: Promise<ZustikSubmitResult<RuntimeValues>> | undefined;
+  readonly stateKey: string;
   readonly unregisterFields: Unsubscribe[];
   unsubscribeForm: Unsubscribe | undefined;
 }
 
-interface RuntimeManager {
-  readonly ids: Map<string, string>;
-  readonly ownedStateKeys: Set<string>;
-  readonly runtimes: Map<string, FormRuntime>;
-  generation: number;
+interface StoreClaims {
+  readonly formIds: Map<string, string>;
+  readonly stateKeys: Set<string>;
 }
 
-type RuntimeSetState = (
-  partial:
-    | Record<string, unknown>
-    | ((state: Record<string, unknown>) => Record<string, unknown>),
-) => void;
+const STORE_CLAIMS = new WeakMap<object, StoreClaims>();
 
-type RuntimeGetState = () => Record<string, unknown>;
+type RuntimeSetState = (partial: Record<string, unknown>) => void;
+
+function claimStoreNames(
+  store: object,
+  stateKey: string,
+  formId: string,
+  postfix: string,
+): () => void {
+  let claims = STORE_CLAIMS.get(store);
+  if (claims === undefined) {
+    claims = { formIds: new Map(), stateKeys: new Set() };
+    STORE_CLAIMS.set(store, claims);
+  }
+
+  if (claims.stateKeys.has(stateKey)) {
+    throw new Error(
+      `Cannot compose form ${JSON.stringify(postfix)} because ${stateKey} is already supplied by another Zustik Form slice.`,
+    );
+  }
+  const idOwner = claims.formIds.get(formId);
+  if (idOwner !== undefined) {
+    throw new Error(
+      `Form ID ${JSON.stringify(formId)} is already used by ${JSON.stringify(idOwner)} in this store.`,
+    );
+  }
+
+  claims.stateKeys.add(stateKey);
+  claims.formIds.set(formId, postfix);
+  return () => {
+    claims?.stateKeys.delete(stateKey);
+    claims?.formIds.delete(formId);
+  };
+}
 
 function shallowCopyValues(values: object): RuntimeValues {
   return { ...values };
@@ -195,39 +167,6 @@ function cloneRuntimeValues(
   values: Readonly<RuntimeValues>,
 ): RuntimeValues {
   return cloneZustikValues(values);
-}
-
-function prepareDefinition(definition: RuntimeDefinition): RuntimeDefinition {
-  assertZustikDefinition(definition);
-
-  if (
-    definition.validationSchema !== undefined &&
-    (definition.validationSchema === null ||
-      typeof definition.validationSchema !== "object" ||
-      !("~run" in definition.validationSchema))
-  ) {
-    throw new TypeError("validationSchema must be a Valibot schema.");
-  }
-
-  return {
-    ...definition,
-    defaultValues: cloneRuntimeValues(definition.defaultValues),
-    fields: definition.fields.map((field) => {
-      const componentProps = field.componentProps;
-      return {
-        ...field,
-        ...(componentProps === undefined
-          ? {}
-          : { componentProps: { ...componentProps } }),
-        ...(field.dependsOn === undefined
-          ? {}
-          : { dependsOn: [...field.dependsOn] }),
-      };
-    }),
-    ...(definition.options === undefined
-      ? {}
-      : { options: { ...definition.options } }),
-  };
 }
 
 function extractDefaultChangeValue(args: readonly unknown[]): unknown {
@@ -277,17 +216,6 @@ function sameSignature(
   return true;
 }
 
-function sameReferences<TValue>(
-  previous: readonly TValue[] | undefined,
-  next: readonly TValue[],
-): boolean {
-  return (
-    previous !== undefined &&
-    previous.length === next.length &&
-    previous.every((value, index) => value === next[index])
-  );
-}
-
 function sameRecordReferences(
   previous: Readonly<Record<string, unknown>> | undefined,
   next: Readonly<Record<string, unknown>>,
@@ -305,10 +233,23 @@ function sameRecordReferences(
   );
 }
 
+function stabilizeRecord<TValue>(
+  previous: Readonly<Record<string, TValue>> | undefined,
+  next: Readonly<Record<string, TValue>>,
+): Readonly<Record<string, TValue>> {
+  return sameRecordReferences(previous, next)
+    ? (previous as Readonly<Record<string, TValue>>)
+    : next;
+}
+
 function hasAnyError(errors: Record<string, unknown>): boolean {
   return Object.keys(errors).some((key) => {
     const value = errors[key];
-    if (value !== null && typeof value === "object" && !(value instanceof Error)) {
+    if (
+      value !== null &&
+      typeof value === "object" &&
+      !(value instanceof Error)
+    ) {
       return hasAnyError(value as Record<string, unknown>);
     }
     return value !== undefined;
@@ -324,11 +265,11 @@ function callIfFunction(
   }
 }
 
-function toFieldRenderState(
+function toFieldState(
   name: string,
   state: FieldState<unknown> | undefined,
   formState: FormState<RuntimeValues>,
-): ZustikFieldRenderState<unknown> {
+): ZustikFieldState<unknown> {
   const dirty = formState.dirtyFields?.[name] ?? false;
   const error = getIn(formState.errors ?? {}, name);
   const submitError = getIn(formState.submitErrors ?? {}, name);
@@ -361,7 +302,7 @@ function toFieldRenderState(
 
 function fieldSignature(
   definition: RuntimeFieldDefinition,
-  state: ZustikFieldRenderState<unknown>,
+  state: ZustikFieldState<unknown>,
   values: RuntimeValues,
 ): readonly unknown[] {
   const signature: unknown[] = [
@@ -387,7 +328,7 @@ function fieldSignature(
     state.visited,
   ];
 
-  if (definition.mapComponentProps !== undefined) {
+  if (definition.mapProps !== undefined) {
     if (definition.dependsOn === undefined) {
       signature.push(values);
     } else {
@@ -404,34 +345,27 @@ function createFieldRuntime(
   runtime: FormRuntime,
   definition: RuntimeFieldDefinition,
 ): RuntimeField {
-  const isCurrent = (): boolean => runtime.active;
   const input: ZustikFieldInput<unknown> = {
     onBlur: () => {
-      if (isCurrent()) {
-        runtime.api.blur(definition.name);
-      }
+      if (runtime.active) runtime.api.blur(definition.name);
     },
     onChange: (value) => {
-      if (isCurrent()) {
-        runtime.api.change(definition.name, value);
-      }
+      if (runtime.active) runtime.api.change(definition.name, value);
     },
     onFocus: () => {
-      if (isCurrent()) {
-        runtime.api.focus(definition.name);
-      }
+      if (runtime.active) runtime.api.focus(definition.name);
     },
   };
 
-  const userProps = definition.componentProps ?? {};
-  const field: RuntimeField = {
+  const userProps = definition.props ?? {};
+  return {
     componentOnBlur: (...args) => {
-      if (!isCurrent()) return;
+      if (!runtime.active) return;
       input.onBlur();
       callIfFunction(userProps.onBlur, args);
     },
     componentOnChange: (...args) => {
-      if (!isCurrent()) return;
+      if (!runtime.active) return;
       const value =
         definition.valueFromChange === undefined
           ? extractDefaultChangeValue(args)
@@ -440,7 +374,7 @@ function createFieldRuntime(
       callIfFunction(userProps.onChange, args);
     },
     componentOnFocus: (...args) => {
-      if (!isCurrent()) return;
+      if (!runtime.active) return;
       input.onFocus();
       callIfFunction(userProps.onFocus, args);
     },
@@ -452,7 +386,6 @@ function createFieldRuntime(
     signature: undefined,
     view: undefined,
   };
-  return field;
 }
 
 function projectField(
@@ -461,30 +394,24 @@ function projectField(
   formState: FormState<RuntimeValues>,
 ): ZustikFieldView<unknown, Record<string, unknown>> {
   const definition = field.definition;
-  const renderState = toFieldRenderState(
+  const state = toFieldState(
     definition.name,
     runtime.api.getFieldState(definition.name),
     formState,
   );
-  const signature = fieldSignature(
-    definition,
-    renderState,
-    formState.values,
-  );
+  const signature = fieldSignature(definition, state, formState.values);
   if (sameSignature(field.signature, signature) && field.view !== undefined) {
     return field.view;
   }
 
   const renderSignature =
-    definition.mapComponentProps === undefined
-      ? [renderState.value]
-      : signature;
+    definition.mapProps === undefined ? [state.value] : signature;
   if (
     !sameSignature(field.renderSignature, renderSignature) ||
     field.props === undefined
   ) {
     try {
-      const userProps = definition.componentProps ?? {};
+      const userProps = definition.props ?? {};
       const defaultProps: ZustikDefaultFieldProps<unknown> &
         Record<string, unknown> = {
         ...userProps,
@@ -492,18 +419,18 @@ function projectField(
         onBlur: field.componentOnBlur,
         onChange: field.componentOnChange,
         onFocus: field.componentOnFocus,
-        value: renderState.value,
+        value: state.value,
       };
 
       const resolvedProps =
-        definition.mapComponentProps === undefined
+        definition.mapProps === undefined
           ? defaultProps
-          : definition.mapComponentProps({
-              componentProps: userProps,
-              field: renderState,
+          : definition.mapProps({
+              field: state,
               input: field.input,
+              props: userProps,
               values: formState.values,
-            });
+            } as ZustikComponentBindingContext<any, any, any>);
       const { key: _key, ref: _ref, ...safeProps } = resolvedProps;
       field.props = safeProps;
       field.element =
@@ -524,7 +451,7 @@ function projectField(
         unknown,
         Record<string, unknown>
       > = {
-        ...renderState,
+        ...state,
         component: definition.component,
         element: field.element,
         onBlur: field.input.onBlur,
@@ -533,8 +460,6 @@ function projectField(
         projectionError: error,
         props: field.props ?? {},
       };
-      // Retry the mapper on the next projection while still publishing the
-      // latest Final Form state instead of leaving Zustand silently stale.
       field.signature = undefined;
       field.view = failedView;
       return failedView;
@@ -542,7 +467,7 @@ function projectField(
   }
 
   const view: ZustikFieldView<unknown, Record<string, unknown>> = {
-    ...renderState,
+    ...state,
     component: definition.component,
     element: field.element,
     onBlur: field.input.onBlur,
@@ -556,27 +481,10 @@ function projectField(
   return view;
 }
 
-function isRuntimeCurrent(
-  manager: RuntimeManager,
-  runtime: FormRuntime,
-): boolean {
-  return (
-    runtime.active &&
-    manager.runtimes.get(runtime.definition.formPostfix) === runtime
-  );
-}
-
-function createRuntimeCommands(
-  manager: RuntimeManager,
-  runtime: FormRuntime,
-): RuntimeCommands {
-  const isCurrent = (): boolean => isRuntimeCurrent(manager, runtime);
-
+function createRuntimeCommands(runtime: FormRuntime): RuntimeCommands {
   const executeSubmit = async (): Promise<
     ZustikSubmitResult<RuntimeValues>
   > => {
-    if (!isCurrent()) return { status: "destroyed" };
-
     const attempt: RuntimeSubmitAttempt = {
       invoked: false,
       outcome: undefined,
@@ -584,7 +492,6 @@ function createRuntimeCommands(
     runtime.publicSubmitAttempt = attempt;
     try {
       await Promise.resolve(runtime.api.submit());
-      if (!isCurrent()) return { status: "destroyed" };
       if (attempt.outcome !== undefined) return attempt.outcome;
 
       const state = runtime.api.getState();
@@ -606,7 +513,6 @@ function createRuntimeCommands(
   };
 
   const submit = (): Promise<ZustikSubmitResult<RuntimeValues>> => {
-    if (!isCurrent()) return Promise.resolve({ status: "destroyed" });
     if (runtime.pendingSubmit !== undefined) return runtime.pendingSubmit;
 
     const pending = executeSubmit().finally(() => {
@@ -619,37 +525,28 @@ function createRuntimeCommands(
   };
 
   const reset = async (): Promise<void> => {
-    if (!isCurrent()) return;
-
     const previousValues = runtime.api.getState().values;
     runtime.api.restart();
-    if (!isCurrent()) return;
 
     const initialValues = runtime.api.getState().initialValues ?? {};
     await runtime.definition.onReset?.({
       formApi: runtime.api,
-      formId: runtime.definition.formId as string,
+      formId: runtime.definition.formId,
       formPostfix: runtime.definition.formPostfix,
       initialValues: initialValues as RuntimeValues,
       previousValues,
     });
   };
 
+  const change = (name: string, value: unknown): void => {
+    runtime.api.change(name, value);
+  };
+
   return {
-    blur: (name) => {
-      if (isCurrent()) runtime.api.blur(name);
-    },
-    change: (name, value) => {
-      if (isCurrent()) runtime.api.change(name, value);
-    },
-    focus: (name) => {
-      if (isCurrent()) runtime.api.focus(name);
-    },
-    initialize: (values) => {
-      if (isCurrent()) {
-        runtime.api.initialize(cloneRuntimeValues(values));
-      }
-    },
+    blur: (name) => runtime.api.blur(name),
+    change,
+    focus: (name) => runtime.api.focus(name),
+    initialize: (values) => runtime.api.initialize(cloneRuntimeValues(values)),
     onReset: async (event) => {
       event?.preventDefault();
       await reset();
@@ -666,51 +563,51 @@ function createRuntimeCommands(
 function projectRuntime(
   runtime: FormRuntime,
   formState: FormState<RuntimeValues>,
-): ZustikFormSlot<RuntimeDefinition> {
-  const nextFields = runtime.fields.map((field) =>
-    projectField(runtime, field, formState),
-  );
-  const fields = sameReferences(runtime.fieldsView, nextFields)
-    ? (runtime.fieldsView as typeof nextFields)
-    : nextFields;
-  if (fields !== runtime.fieldsView) {
-    const fieldsByName: Record<
-      string,
-      ZustikFieldView<unknown, Record<string, unknown>>
-    > = Object.create(null) as Record<
-      string,
-      ZustikFieldView<unknown, Record<string, unknown>>
-    >;
-    for (const field of fields) fieldsByName[field.name] = field;
-    runtime.fieldsByNameView = fieldsByName;
-    runtime.fieldsView = fields;
-  }
-  const nextComponents = fields.flatMap((field) =>
-    field.element === undefined ? [] : [field.element],
-  );
-  const components = sameReferences(runtime.componentsView, nextComponents)
-    ? (runtime.componentsView as typeof nextComponents)
-    : nextComponents;
-  runtime.componentsView = components;
-  const fieldsByName = runtime.fieldsByNameView as Readonly<
-    Record<string, ZustikFieldView<unknown, Record<string, unknown>>>
-  >;
-  const projectionErrors: Record<string, unknown> = Object.create(null) as Record<
+): ZustikFormView<RuntimeDefinition> {
+  const nextFields: Record<
     string,
-    unknown
+    ZustikFieldView<unknown, Record<string, unknown>>
+  > = Object.create(null) as Record<
+    string,
+    ZustikFieldView<unknown, Record<string, unknown>>
   >;
-  for (const field of fields) {
+  for (const runtimeField of runtime.fields) {
+    nextFields[runtimeField.definition.name] = projectField(
+      runtime,
+      runtimeField,
+      formState,
+    );
+  }
+  const fields = stabilizeRecord(runtime.fieldsView, nextFields);
+  runtime.fieldsView = fields;
+
+  const nextFieldProps: Record<string, object> = Object.create(null) as Record<
+    string,
+    object
+  >;
+  const nextComponents: Record<string, ReactElement> = Object.create(
+    null,
+  ) as Record<string, ReactElement>;
+  const nextProjectionErrors: Record<string, unknown> = Object.create(
+    null,
+  ) as Record<string, unknown>;
+  for (const [name, field] of Object.entries(fields)) {
+    nextFieldProps[name] = field.props;
+    if (field.element !== undefined) nextComponents[name] = field.element;
     if (field.projectionError !== undefined) {
-      projectionErrors[field.name] = field.projectionError;
+      nextProjectionErrors[name] = field.projectionError;
     }
   }
-  const stableProjectionErrors = sameRecordReferences(
+
+  const fieldProps = stabilizeRecord(runtime.fieldPropsView, nextFieldProps);
+  runtime.fieldPropsView = fieldProps;
+  const components = stabilizeRecord(runtime.componentsView, nextComponents);
+  runtime.componentsView = components;
+  const projectionErrors = stabilizeRecord(
     runtime.projectionErrorsView,
-    projectionErrors,
-  )
-    ? (runtime.projectionErrorsView as Readonly<Record<string, unknown>>)
-    : projectionErrors;
-  runtime.projectionErrorsView = stableProjectionErrors;
+    nextProjectionErrors,
+  );
+  runtime.projectionErrorsView = projectionErrors;
 
   const commands = runtime.commands;
   const initialValues = (formState.initialValues ??
@@ -720,9 +617,10 @@ function projectRuntime(
       typeof formState.active === "string"
         ? (formState.active as FieldPath<RuntimeValues>)
         : undefined,
+    api: runtime.api,
     blur: commands.blur,
     change: commands.change,
-    components,
+    components: components as never,
     dirty: formState.dirty ?? false,
     dirtyFields: formState.dirtyFields ?? {},
     dirtyFieldsSinceLastSubmit:
@@ -730,14 +628,19 @@ function projectRuntime(
     dirtySinceLastSubmit: formState.dirtySinceLastSubmit ?? false,
     error: formState.error,
     errors: formState.hasValidationErrors ? formState.errors : undefined,
+    fieldProps: fieldProps as never,
     fields: fields as never,
-    fieldsByName: fieldsByName as never,
     focus: commands.focus,
-    formId: runtime.definition.formId as string,
+    formId: runtime.definition.formId,
     formPostfix: runtime.definition.formPostfix,
+    formProps: {
+      id: runtime.definition.formId,
+      onReset: commands.onReset,
+      onSubmit: commands.onSubmit,
+    },
+    hasProjectionErrors: Object.keys(projectionErrors).length > 0,
     hasSubmitErrors: formState.hasSubmitErrors ?? false,
     hasValidationErrors: formState.hasValidationErrors ?? false,
-    hasProjectionErrors: Object.keys(stableProjectionErrors).length > 0,
     initialValues,
     initialize: commands.initialize,
     invalid: formState.invalid ?? false,
@@ -746,8 +649,9 @@ function projectRuntime(
     onReset: commands.onReset,
     onSubmit: commands.onSubmit,
     pristine: formState.pristine ?? true,
-    projectionErrors: stableProjectionErrors,
+    projectionErrors,
     reset: commands.reset,
+    setValue: commands.change,
     submit: commands.submit,
     submitError: formState.submitError,
     submitErrors: formState.hasSubmitErrors
@@ -763,7 +667,7 @@ function projectRuntime(
     visited: formState.visited ?? {},
   };
 
-  return { form };
+  return form;
 }
 
 function disposeRuntime(runtime: FormRuntime): void {
@@ -777,22 +681,15 @@ function disposeRuntime(runtime: FormRuntime): void {
 }
 
 function stageRuntime(
-  manager: RuntimeManager,
   definition: RuntimeDefinition,
-  publish: (
-    runtime: FormRuntime,
-    slot: ZustikFormSlot<RuntimeDefinition>,
-  ) => void,
+  publish: (form: ZustikFormView<RuntimeDefinition>) => void,
 ): FormRuntime {
   let runtime: FormRuntime | undefined;
   const schema = definition.validationSchema;
   const api: FormApi<RuntimeValues> = createFinalForm<RuntimeValues>({
     ...(definition.options?.destroyOnUnregister === undefined
       ? {}
-      : {
-          destroyOnUnregister:
-            definition.options.destroyOnUnregister,
-        }),
+      : { destroyOnUnregister: definition.options.destroyOnUnregister }),
     initialValues: shallowCopyValues(definition.defaultValues),
     ...(definition.options?.keepDirtyOnReinitialize === undefined
       ? {}
@@ -803,9 +700,7 @@ function stageRuntime(
     onSubmit: async (
       inputValues,
     ): Promise<Record<string, unknown> | undefined> => {
-      if (runtime === undefined || !isRuntimeCurrent(manager, runtime)) {
-        return undefined;
-      }
+      if (runtime === undefined || !runtime.active) return undefined;
       const publicAttempt = runtime.publicSubmitAttempt;
       if (publicAttempt !== undefined) publicAttempt.invoked = true;
 
@@ -824,10 +719,10 @@ function stageRuntime(
         output = parsed.output;
       }
 
-      if (!isRuntimeCurrent(manager, runtime)) return undefined;
+      if (!runtime.active) return undefined;
       const submissionErrors = (await definition.onSubmit(output, {
         formApi: api,
-        formId: definition.formId as string,
+        formId: definition.formId,
         formPostfix: definition.formPostfix,
         inputValues,
       })) as Record<string, unknown> | undefined;
@@ -844,23 +739,25 @@ function stageRuntime(
     },
     ...(schema === undefined
       ? {}
-      : { validate: (values: RuntimeValues) => validateWithSchema(schema, values) }),
+      : {
+          validate: (values: RuntimeValues) =>
+            validateWithSchema(schema, values),
+        }),
     ...(definition.options?.validateOnBlur === undefined
       ? {}
       : { validateOnBlur: definition.options.validateOnBlur }),
   });
 
   const runtimeShell = {
-    active: false,
+    active: true,
     api,
     commands: undefined,
     componentsView: undefined,
     definition,
+    fieldPropsView: undefined,
     fields: undefined,
-    fieldsByNameView: undefined,
     fieldsView: undefined,
-    generation: manager.generation,
-    pendingSlot: undefined,
+    pendingForm: undefined,
     pendingSubmit: undefined,
     projectionErrorsView: undefined,
     publicSubmitAttempt: undefined,
@@ -870,7 +767,7 @@ function stageRuntime(
   } as unknown as FormRuntime;
   runtime = runtimeShell;
   (runtimeShell as { commands: RuntimeCommands }).commands =
-    createRuntimeCommands(manager, runtimeShell);
+    createRuntimeCommands(runtimeShell);
   (runtimeShell as { fields: readonly RuntimeField[] }).fields =
     definition.fields.map((field) => createFieldRuntime(runtimeShell, field));
 
@@ -895,9 +792,9 @@ function stageRuntime(
               return;
             }
 
-            const slot = projectRuntime(runtimeShell, api.getState());
-            runtimeShell.pendingSlot = slot;
-            publish(runtimeShell, slot);
+            const form = projectRuntime(runtimeShell, api.getState());
+            runtimeShell.pendingForm = form;
+            publish(form);
           },
           ZUSTIK_FIELD_SUBSCRIPTION,
           field.isEqual === undefined ? undefined : { isEqual: field.isEqual },
@@ -906,10 +803,10 @@ function stageRuntime(
       }
     });
 
-    runtimeShell.unsubscribeForm = api.subscribe((state: FormState<RuntimeValues>) => {
-      const slot = projectRuntime(runtimeShell, state);
-      runtimeShell.pendingSlot = slot;
-      if (runtimeShell.active) publish(runtimeShell, slot);
+    runtimeShell.unsubscribeForm = api.subscribe((state) => {
+      const form = projectRuntime(runtimeShell, state);
+      runtimeShell.pendingForm = form;
+      publish(form);
     }, FORM_SUBSCRIPTION);
   } catch (error) {
     disposeRuntime(runtimeShell);
@@ -919,163 +816,87 @@ function stageRuntime(
   return runtimeShell;
 }
 
-export function zustikFormCreate<
-  TRegistry extends object,
-  TState extends ZustikFormSlice<TRegistry> = ZustikFormSlice<TRegistry>,
-  TMutators extends [StoreMutatorIdentifier, unknown][] = [],
->(): StateCreator<TState, TMutators, [], ZustikFormSlice<TRegistry>>;
-
-export function zustikFormCreate<
-  TRegistry extends object,
-  const TActionPostfix extends string,
-  TState extends ZustikFormSlice<TRegistry, TActionPostfix> = ZustikFormSlice<
-    TRegistry,
-    TActionPostfix
-  >,
-  TMutators extends [StoreMutatorIdentifier, unknown][] = [],
+export function createZustikFormSlice<
+  const TPostfix extends string,
+  const TSchema extends AnyZustikSchema,
+  const TFields extends LooseFieldsDefinition,
 >(
-  actionPostfix: TActionPostfix,
-): StateCreator<
-  TState,
-  TMutators,
-  [],
-  ZustikFormSlice<TRegistry, TActionPostfix>
+  definition: Omit<
+    ZustikFormDefinition<
+      TPostfix,
+      SchemaInput<TSchema>,
+      SchemaOutput<TSchema>,
+      TFields,
+      TSchema
+    >,
+    "fields"
+  > & {
+    readonly fields: TFields;
+    readonly validationSchema: TSchema;
+  },
+): ZustikFormSliceFactory<
+  ZustikFormDefinition<
+    TPostfix,
+    SchemaInput<TSchema>,
+    SchemaOutput<TSchema>,
+    TFields,
+    TSchema
+  >
+>;
+
+export function createZustikFormSlice<
+  const TPostfix extends string,
+  TInput extends object,
+  const TFields extends LooseFieldsDefinition,
+>(
+  definition: Omit<
+    ZustikFormDefinition<TPostfix, TInput, TInput, TFields, undefined>,
+    "fields"
+  > & {
+    readonly fields: TFields;
+  },
+): ZustikFormSliceFactory<
+  ZustikFormDefinition<TPostfix, TInput, TInput, TFields, undefined>
 >;
 
 /**
- * Creates the Zustand slice that owns all vanilla Final Form instances.
- * React is used only to create immutable element descriptions during state
- * projection; this slice never uses hooks or component lifecycle.
+ * Creates one static form-slice factory. Calling the returned function during
+ * Zustand store creation instantiates one independent Final Form runtime for
+ * that store; the configured form is immediately present in the returned slice.
  */
-export function zustikFormCreate(
-  actionPostfix = "",
-): StateCreator<
-  Record<string, unknown>,
-  [],
-  [],
-  Record<string, unknown>
-> {
-  if (actionPostfix.length > 0) {
-    assertZustikPostfix(actionPostfix, "action postfix");
-  }
+export function createZustikFormSlice(
+  rawDefinition: object,
+): ZustikFormSliceFactory<any> {
+  const template = prepareZustikDefinition(rawDefinition as never);
 
-  return ((set, get) => {
-    const setState = set as RuntimeSetState;
-    const getState = get as RuntimeGetState;
-    const manager: RuntimeManager = {
-      generation: 0,
-      ids: new Map(),
-      ownedStateKeys: new Set(),
-      runtimes: new Map(),
-    };
+  return ((setState, _getState, store) => {
+    const definition = clonePreparedZustikDefinition(template);
+    const stateKey = `zustikForm${definition.formPostfix}`;
+    const releaseClaims = claimStoreNames(
+      store,
+      stateKey,
+      definition.formId,
+      definition.formPostfix,
+    );
+    const publishState = setState as RuntimeSetState;
+    let initializing = true;
+    let latestForm: ZustikFormView<RuntimeDefinition> | undefined;
 
-    const publish = (
-      runtime: FormRuntime,
-      slot: ZustikFormSlot<RuntimeDefinition>,
-    ): void => {
-      if (!isRuntimeCurrent(manager, runtime)) return;
-      setState({ [runtime.stateKey]: slot });
-    };
-
-    const create = (
-      rawDefinition: RegisteredDefinitionUnion<Record<string, unknown>>,
-      options?: ZustikCreateFormOptions,
-    ): ZustikFormSlot<RuntimeDefinition> => {
-      const definition = prepareDefinition(
-        rawDefinition as unknown as RuntimeDefinition,
-      );
-      const postfix = definition.formPostfix;
-      const previous = manager.runtimes.get(postfix);
-      if (previous !== undefined && options?.replace !== true) {
-        throw new Error(
-          `Form ${JSON.stringify(postfix)} already exists. Pass { replace: true } to replace it.`,
-        );
-      }
-
-      const stateKey = `zustikForm${postfix}`;
-      if (
-        previous === undefined &&
-        Object.prototype.hasOwnProperty.call(getState(), stateKey) &&
-        !manager.ownedStateKeys.has(stateKey)
-      ) {
-        throw new Error(
-          `Cannot create form ${JSON.stringify(postfix)} because ${stateKey} is already used by the store.`,
-        );
-      }
-
-      manager.generation += 1;
-      const formId =
-        definition.formId ??
-        `zustik-${definition.formPostfix}-${manager.generation}`;
-      const idOwner = manager.ids.get(formId);
-      if (idOwner !== undefined && idOwner !== postfix) {
-        throw new Error(
-          `Form ID ${JSON.stringify(formId)} is already used by ${JSON.stringify(idOwner)}.`,
-        );
-      }
-
-      const nextDefinition: RuntimeDefinition = {
-        ...definition,
-        formId,
-      };
-      const next = stageRuntime(manager, nextDefinition, publish);
-      if (previous !== undefined) {
-        disposeRuntime(previous);
-        manager.ids.delete(previous.definition.formId as string);
-      }
-
-      manager.runtimes.set(postfix, next);
-      manager.ids.set(formId, postfix);
-      manager.ownedStateKeys.add(stateKey);
-      next.active = true;
-      const slot =
-        next.pendingSlot ?? projectRuntime(next, next.api.getState());
-      next.pendingSlot = slot;
-      publish(next, slot);
-      return slot;
-    };
-
-    const destroy = (formPostfix: string): boolean => {
-      const runtime = manager.runtimes.get(formPostfix);
-      if (runtime === undefined) return false;
-
-      manager.runtimes.delete(formPostfix);
-      manager.ids.delete(runtime.definition.formId as string);
-      disposeRuntime(runtime);
-      setState({ [runtime.stateKey]: undefined });
-      return true;
-    };
-
-    const disposeAll = (): void => {
-      if (manager.runtimes.size === 0) return;
-
-      const patch: Record<string, unknown> = {};
-      for (const runtime of manager.runtimes.values()) {
-        patch[runtime.stateKey] = undefined;
-        disposeRuntime(runtime);
-      }
-      manager.runtimes.clear();
-      manager.ids.clear();
-      setState(patch);
-    };
-
-    return {
-      [`createForm${actionPostfix}`]: create,
-      [`destroyForm${actionPostfix}`]: destroy,
-      [`disposeForms${actionPostfix}`]: disposeAll,
-      [`getFormApi${actionPostfix}`]: (formPostfix: string) =>
-        manager.runtimes.get(formPostfix)?.api,
-      [`hasForm${actionPostfix}`]: (formPostfix: string) =>
-        manager.runtimes.has(formPostfix),
-    };
-  }) as StateCreator<
-    Record<string, unknown>,
-    [],
-    [],
-    Record<string, unknown>
-  >;
+    try {
+      const runtime = stageRuntime(definition, (form) => {
+        latestForm = form;
+        if (!initializing) publishState({ [stateKey]: form });
+      });
+      const form =
+        latestForm ??
+        runtime.pendingForm ??
+        projectRuntime(runtime, runtime.api.getState());
+      latestForm = form;
+      initializing = false;
+      return { [stateKey]: form };
+    } catch (error) {
+      releaseClaims();
+      throw error;
+    }
+  }) as ZustikFormSliceFactory<any>;
 }
-
-/** Alias for teams that prefer conventional Zustand slice naming. */
-export const createZustikFormSlice: typeof zustikFormCreate =
-  zustikFormCreate;
