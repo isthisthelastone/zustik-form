@@ -1,375 +1,357 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { isValidElement } from "react";
+import { FORM_ERROR } from "final-form";
 import * as v from "valibot";
 import { createStore } from "zustand/vanilla";
 
-import {
-  FORM_ERROR,
-  defineZustikForm,
-  zustikFormCreate,
-} from "../dist/index.js";
+import { createZustikFormSlice } from "../dist/index.js";
 
-function createManager(actionPostfix) {
-  const slice =
-    actionPostfix === undefined
-      ? zustikFormCreate()
-      : zustikFormCreate(actionPostfix);
-  return createStore()((set, get, store) => ({
-    ...slice(set, get, store),
-    unrelated: 42,
-  }));
+function TextInput() {
+  return null;
 }
 
-function TextField() {
-  throw new Error("createElement must not execute the component");
-}
-
-function makeCommentDefinition(overrides = {}) {
-  const schema = v.object({
-    comment: v.pipe(
-      v.string(),
-      v.minLength(2, "Comment is too short"),
-      v.transform((value) => value.toUpperCase()),
-    ),
-    profile: v.object({
-      displayName: v.pipe(v.string(), v.minLength(1, "Name is required")),
-    }),
-  });
-
-  return defineZustikForm({
-    defaultValues: { comment: "", profile: { displayName: "" } },
-    fields: [
-      {
-        component: TextField,
-        componentProps: { fullWidth: true },
-        name: "comment",
+function makeCommentFactory(overrides = {}) {
+  return createZustikFormSlice({
+    defaultValues: {
+      comment: "",
+      profile: { displayName: "" },
+    },
+    fields: {
+      comment: {
+        component: TextInput,
+        props: { label: "Comment" },
       },
-      { name: "profile.displayName" },
-    ],
+      "profile.displayName": {},
+    },
+    formId: "comment-form",
     formPostfix: "Comment",
     onSubmit: () => undefined,
-    validationSchema: schema,
     ...overrides,
   });
 }
 
-test("creates an isolated Final Form view-model and React element snapshot", () => {
-  const store = createManager();
-  const definition = makeCommentDefinition();
+function createFormStore(factory, extraSlice) {
+  return createStore()((set, get, api) => ({
+    ...factory(set, get, api),
+    ...(extraSlice?.(set, get, api) ?? {}),
+  }));
+}
 
-  const created = store.getState().createForm(definition);
-  const slot = store.getState().zustikFormComment;
+test("creates one always-present static form slice with direct keyed views", () => {
+  const createCommentFormSlice = makeCommentFactory();
+  const store = createFormStore(createCommentFormSlice);
+  const state = store.getState();
+  const form = state.zustikFormComment;
 
-  assert.equal(slot, created);
-  assert.equal(store.getState().unrelated, 42);
-  assert.equal(slot.form.formPostfix, "Comment");
-  assert.match(slot.form.formId, /^zustik-Comment-\d+$/);
-  assert.deepEqual(slot.form.values, {
-    comment: "",
-    profile: { displayName: "" },
-  });
-  assert.equal(slot.form.valid, false);
-  assert.equal(slot.form.errors.comment, "Comment is too short");
-  assert.equal(slot.form.errors.profile.displayName, "Name is required");
-  assert.equal(slot.form.fields.length, 2);
-  assert.equal(slot.form.components.length, 1);
-  assert.equal(slot.form.fieldsByName.comment, slot.form.fields[0]);
+  assert.equal(state.createForm, undefined);
+  assert.equal(form.formId, "comment-form");
+  assert.equal(form.formPostfix, "Comment");
+  assert.equal(form.formProps.id, "comment-form");
+  assert.equal(form.values.comment, "");
+  assert.deepEqual(Object.keys(form.fields), [
+    "comment",
+    "profile.displayName",
+  ]);
+  assert.deepEqual(Object.keys(form.fieldProps), [
+    "comment",
+    "profile.displayName",
+  ]);
+  assert.deepEqual(Object.keys(form.components), ["comment"]);
+  assert.equal(form.fields.comment.name, "comment");
   assert.equal(
-    slot.form.fieldsByName["profile.displayName"],
-    slot.form.fields[1],
+    form.fields["profile.displayName"].name,
+    "profile.displayName",
   );
-
-  const element = slot.form.components[0];
-  assert.equal(isValidElement(element), true);
-  assert.equal(element.type, TextField);
-  assert.equal(element.key, "comment");
-  assert.equal(element.props.name, "comment");
-  assert.equal(element.props.value, "");
-  assert.equal(element.props.fullWidth, true);
+  assert.equal(form.fieldProps.comment, form.components.comment.props);
+  assert.equal(form.components.comment.type, TextInput);
+  assert.equal(form.components.comment.key, "comment");
+  assert.equal(form.components.comment.props.label, "Comment");
+  assert.equal(form.components.comment.props.value, "");
+  assert.equal(form.formProps.onReset, form.onReset);
+  assert.equal(form.formProps.onSubmit, form.onSubmit);
+  assert.equal(form.api.getState().values.comment, "");
 });
 
-test("component callbacks update Final Form first and preserve old snapshots", () => {
-  const observations = [];
-  let store;
-  const definition = makeCommentDefinition({
-    fields: [
-      {
-        component: TextField,
-        componentProps: {
-          fullWidth: true,
-          onBlur: () => {
-            observations.push([
-              "blur",
-              store.getState().zustikFormComment.form.fields[0].touched,
-            ]);
-          },
-          onChange: () => {
-            observations.push([
-              "change",
-              store.getState().zustikFormComment.form.values.comment,
-            ]);
-          },
-        },
-        name: "comment",
-      },
-      { name: "profile.displayName" },
-    ],
-  });
-  store = createManager();
-  store.getState().createForm(definition);
-
-  const oldElement = store.getState().zustikFormComment.form.components[0];
-  oldElement.props.onChange({ currentTarget: { value: "hello" } });
-
-  const current = store.getState().zustikFormComment.form;
-  assert.equal(current.values.comment, "hello");
-  assert.equal(current.components[0].props.value, "hello");
-  assert.equal(oldElement.props.value, "");
-  assert.deepEqual(observations[0], ["change", "hello"]);
-
-  current.components[0].props.onFocus({});
-  store
-    .getState()
-    .zustikFormComment.form.components[0].props.onBlur({ kind: "blur" });
-  assert.equal(
-    store.getState().zustikFormComment.form.fields[0].touched,
-    true,
-  );
-  assert.deepEqual(observations[1], ["blur", true]);
-});
-
-test("submits Valibot output while retaining input values in state", async () => {
-  const submitted = [];
-  const store = createManager();
-  store.getState().createForm(
-    makeCommentDefinition({
-      onSubmit: (values, context) => {
-        submitted.push({ values, inputValues: context.inputValues });
-      },
-    }),
-  );
-
-  const invalidResult =
-    await store.getState().zustikFormComment.form.submit();
-  assert.equal(invalidResult.status, "invalid");
-  assert.equal(submitted.length, 0);
-
-  let form = store.getState().zustikFormComment.form;
-  form.change("comment", "hello");
-  form = store.getState().zustikFormComment.form;
-  form.change("profile.displayName", "Ada");
-
-  const result = await store.getState().zustikFormComment.form.submit();
-  assert.deepEqual(result, { status: "succeeded" });
-  assert.equal(submitted.length, 1);
-  assert.deepEqual(submitted[0].values, {
-    comment: "HELLO",
-    profile: { displayName: "Ada" },
-  });
-  assert.deepEqual(submitted[0].inputValues, {
-    comment: "hello",
-    profile: { displayName: "Ada" },
-  });
-  assert.equal(
-    store.getState().zustikFormComment.form.values.comment,
-    "hello",
-  );
-});
-
-test("reset commits the default snapshot before invoking the additional action", async () => {
+test("component elements and fieldProps are fully bound at store creation", () => {
   const trace = [];
   let store;
-  const definition = makeCommentDefinition({
-    onReset: (context) => {
-      const form = store.getState().zustikFormComment.form;
-      trace.push({
-        initial: context.initialValues.comment,
-        previous: context.previousValues.comment,
-        touched: form.fields[0].touched,
-        value: form.values.comment,
-      });
+  const createCommentFormSlice = makeCommentFactory({
+    fields: {
+      comment: {
+        component: TextInput,
+        props: {
+          label: "Comment",
+          onBlur: (event) => trace.push(["blur", event.kind]),
+          onChange: () =>
+            trace.push([
+              "change",
+              store.getState().zustikFormComment.values.comment,
+            ]),
+          onFocus: (event) => trace.push(["focus", event.kind]),
+        },
+      },
+      "profile.displayName": {},
     },
   });
-  store = createManager();
-  store.getState().createForm(definition);
+  store = createFormStore(createCommentFormSlice);
 
-  let form = store.getState().zustikFormComment.form;
-  form.change("comment", "changed");
-  form.fields[0].onFocus();
-  store.getState().zustikFormComment.form.fields[0].onBlur();
+  const initial = store.getState().zustikFormComment;
+  const oldElement = initial.components.comment;
+  oldElement.props.onChange({ currentTarget: { value: "hello" } });
+
+  let form = store.getState().zustikFormComment;
+  assert.equal(form.values.comment, "hello");
+  assert.equal(form.fieldProps.comment.value, "hello");
+  assert.equal(form.components.comment.props.value, "hello");
+  assert.notEqual(form.components.comment, oldElement);
+  assert.deepEqual(trace, [["change", "hello"]]);
+
+  form.components.comment.props.onFocus({ kind: "focus" });
+  form = store.getState().zustikFormComment;
+  assert.equal(form.active, "comment");
+  form.components.comment.props.onBlur({ kind: "blur" });
+  form = store.getState().zustikFormComment;
+  assert.equal(form.fields.comment.touched, true);
+  assert.deepEqual(trace, [
+    ["change", "hello"],
+    ["focus", "focus"],
+    ["blur", "blur"],
+  ]);
+});
+
+test("headless fieldProps can be spread directly and use event extraction", () => {
+  const store = createFormStore(makeCommentFactory());
+  let form = store.getState().zustikFormComment;
+  const props = form.fieldProps["profile.displayName"];
+
+  props.onChange({ currentTarget: { value: "Ada" } });
+  form = store.getState().zustikFormComment;
+  assert.equal(form.values.profile.displayName, "Ada");
+  assert.equal(form.fieldProps["profile.displayName"].value, "Ada");
+
+  form.setValue("profile.displayName", "Grace");
+  assert.equal(
+    store.getState().zustikFormComment.values.profile.displayName,
+    "Grace",
+  );
+});
+
+test("validates input, submits transformed output, and exposes formProps", async () => {
+  const submitted = [];
+  const schema = v.object({
+    comment: v.pipe(
+      v.string(),
+      v.trim(),
+      v.minLength(2, "Too short"),
+      v.transform((value) => value.length),
+    ),
+  });
+  const factory = createZustikFormSlice({
+    defaultValues: { comment: "" },
+    fields: { comment: {} },
+    formPostfix: "Validation",
+    onSubmit: (values, context) => {
+      submitted.push({
+        formId: context.formId,
+        input: context.inputValues.comment,
+        output: values.comment,
+      });
+    },
+    validationSchema: schema,
+  });
+  const store = createFormStore(factory);
 
   let prevented = false;
-  await store.getState().zustikFormComment.form.onReset({
+  let result = await store.getState().zustikFormValidation.formProps.onSubmit({
+    preventDefault: () => {
+      prevented = true;
+    },
+  });
+  assert.equal(prevented, true);
+  assert.equal(result.status, "invalid");
+  assert.equal(
+    store.getState().zustikFormValidation.fields.comment.error,
+    "Too short",
+  );
+
+  store.getState().zustikFormValidation.setValue("comment", "  hello  ");
+  result = await store.getState().zustikFormValidation.submit();
+  assert.deepEqual(result, { status: "succeeded" });
+  assert.deepEqual(submitted, [
+    {
+      formId: "zustik-Validation",
+      input: "  hello  ",
+      output: 5,
+    },
+  ]);
+});
+
+test("reset is immediate, event-safe, and runs the configured callback", async () => {
+  const trace = [];
+  let store;
+  const factory = createZustikFormSlice({
+    defaultValues: { value: "initial" },
+    fields: { value: {} },
+    formPostfix: "Resettable",
+    onReset: ({ initialValues, previousValues }) => {
+      trace.push({
+        initial: initialValues.value,
+        previous: previousValues.value,
+        visible: store.getState().zustikFormResettable.values.value,
+      });
+    },
+    onSubmit: () => undefined,
+  });
+  store = createFormStore(factory);
+  store.getState().zustikFormResettable.setValue("value", "changed");
+  store.getState().zustikFormResettable.fields.value.onFocus();
+  store.getState().zustikFormResettable.fields.value.onBlur();
+
+  let prevented = false;
+  await store.getState().zustikFormResettable.formProps.onReset({
     preventDefault: () => {
       prevented = true;
     },
   });
 
-  form = store.getState().zustikFormComment.form;
+  const form = store.getState().zustikFormResettable;
   assert.equal(prevented, true);
-  assert.equal(form.values.comment, "");
+  assert.equal(form.values.value, "initial");
   assert.equal(form.pristine, true);
-  assert.equal(form.fields[0].touched, false);
+  assert.equal(form.fields.value.touched, false);
   assert.deepEqual(trace, [
-    { initial: "", previous: "changed", touched: false, value: "" },
+    { initial: "initial", previous: "changed", visible: "initial" },
   ]);
 });
 
-test("duplicate, replacement, destruction, and stale handles are generation-safe", async () => {
-  const store = createManager();
-  const original = makeCommentDefinition();
-  store.getState().createForm(original);
-
-  assert.throws(
-    () => store.getState().createForm(original),
-    /already exists/,
-  );
-
-  const staleForm = store.getState().zustikFormComment.form;
-  const replacement = makeCommentDefinition({
-    defaultValues: {
-      comment: "replacement",
-      profile: { displayName: "Ready" },
-    },
-  });
-  store.getState().createForm(replacement, { replace: true });
-  assert.equal(
-    store.getState().zustikFormComment.form.values.comment,
-    "replacement",
-  );
-
-  staleForm.change("comment", "stale write");
-  assert.equal(
-    store.getState().zustikFormComment.form.values.comment,
-    "replacement",
-  );
-  assert.deepEqual(await staleForm.submit(), { status: "destroyed" });
-
-  assert.equal(store.getState().destroyForm("Comment"), true);
-  assert.equal(store.getState().zustikFormComment, undefined);
-  assert.equal(store.getState().destroyForm("Comment"), false);
-  assert.deepEqual(
-    await replacement.onSubmit?.(),
-    undefined,
-  );
-});
-
-test("raw Final Form escape hatch projects changes and stores stay isolated", () => {
-  const first = createManager();
-  const second = createManager();
-  const definition = makeCommentDefinition();
-  first.getState().createForm(definition);
-  second.getState().createForm(definition);
-
-  const api = first.getState().getFormApi("Comment");
-  api.change("comment", "first only");
-
-  assert.equal(
-    first.getState().zustikFormComment.form.values.comment,
-    "first only",
-  );
-  assert.equal(second.getState().zustikFormComment.form.values.comment, "");
-
-  first.getState().disposeForms();
-  assert.equal(first.getState().hasForm("Comment"), false);
-  assert.equal(first.getState().zustikFormComment, undefined);
-  assert.equal(second.getState().hasForm("Comment"), true);
-});
-
-test("supports action postfixes without lifecycle helpers", () => {
-  const store = createManager("Admin");
-  assert.equal(typeof store.getState().createFormAdmin, "function");
-  assert.equal(store.getState().createForm, undefined);
-
-  store.getState().createFormAdmin(makeCommentDefinition());
-  assert.equal(store.getState().hasFormAdmin("Comment"), true);
-  assert.equal(store.getState().zustikFormComment.form.formPostfix, "Comment");
-  assert.equal(store.getState().destroyFormAdmin("Comment"), true);
-});
-
-test("accepts caller IDs, generates IDs, and rejects cross-form ID collisions", () => {
-  const store = createManager();
-  const fieldsDefinition = defineZustikForm({
+test("multiple static form factories compose without a registry", () => {
+  const createUserFormSlice = createZustikFormSlice({
     defaultValues: { name: "" },
-    fields: [{ name: "name" }],
-    formId: "grocery-fields-form",
-    formPostfix: "groceryFields",
+    fields: { name: {} },
+    formPostfix: "User",
     onSubmit: () => undefined,
   });
-  const slot = store.getState().createForm(fieldsDefinition);
-  assert.equal(slot.form.formId, "grocery-fields-form");
-  assert.equal(
-    store.getState().zustikFormgroceryFields.form.formId,
-    "grocery-fields-form",
-  );
+  const createProductFormSlice = createZustikFormSlice({
+    defaultValues: { title: "" },
+    fields: { title: {} },
+    formPostfix: "Product",
+    onSubmit: () => undefined,
+  });
 
-  assert.throws(
-    () =>
-      store.getState().createForm(
-        defineZustikForm({
-          defaultValues: { name: "" },
-          fields: [{ name: "name" }],
-          formId: "grocery-fields-form",
-          formPostfix: "groceryComponents",
-          onSubmit: () => undefined,
-        }),
-      ),
-    /already used/,
-  );
-  assert.equal(store.getState().zustikFormgroceryComponents, undefined);
+  const store = createStore()((set, get, api) => ({
+    ...createUserFormSlice(set, get, api),
+    ...createProductFormSlice(set, get, api),
+    count: 0,
+  }));
+  store.getState().zustikFormUser.setValue("name", "Ada");
+
+  assert.equal(store.getState().zustikFormUser.values.name, "Ada");
+  assert.equal(store.getState().zustikFormProduct.values.title, "");
+  assert.equal(store.getState().count, 0);
 });
 
-test("supports custom component prop mapping and form-level validation errors", () => {
+test("one static factory creates isolated runtimes for separate stores", () => {
+  const factory = makeCommentFactory();
+  const first = createFormStore(factory);
+  const second = createFormStore(factory);
+
+  first.getState().zustikFormComment.setValue("comment", "first only");
+  assert.equal(first.getState().zustikFormComment.values.comment, "first only");
+  assert.equal(second.getState().zustikFormComment.values.comment, "");
+
+  first.getState().zustikFormComment.api.change("comment", "through api");
+  assert.equal(first.getState().zustikFormComment.values.comment, "through api");
+});
+
+test("rejects duplicate static postfixes and form IDs in one store", () => {
+  const first = createZustikFormSlice({
+    defaultValues: { value: "" },
+    fields: { value: {} },
+    formId: "shared-id",
+    formPostfix: "Duplicate",
+    onSubmit: () => undefined,
+  });
+  const samePostfix = createZustikFormSlice({
+    defaultValues: { value: "" },
+    fields: { value: {} },
+    formId: "other-id",
+    formPostfix: "Duplicate",
+    onSubmit: () => undefined,
+  });
+  assert.throws(
+    () =>
+      createStore()((set, get, api) => ({
+        ...first(set, get, api),
+        ...samePostfix(set, get, api),
+      })),
+    /already supplied/,
+  );
+
+  const sameId = createZustikFormSlice({
+    defaultValues: { value: "" },
+    fields: { value: {} },
+    formId: "shared-id",
+    formPostfix: "Other",
+    onSubmit: () => undefined,
+  });
+  assert.throws(
+    () =>
+      createStore()((set, get, api) => ({
+        ...first(set, get, api),
+        ...sameId(set, get, api),
+      })),
+    /already used/,
+  );
+});
+
+test("supports mapProps for non-standard controlled components", () => {
   function Checkbox() {
     return null;
   }
 
-  const store = createManager();
   const schema = v.pipe(
     v.object({ accepted: v.boolean() }),
     v.check((values) => values.accepted, "You must accept"),
   );
-  store.getState().createForm(
-    defineZustikForm({
-      defaultValues: { accepted: false },
-      fields: [
-        {
-          component: Checkbox,
-          componentProps: { color: "primary" },
-          mapComponentProps: ({ componentProps, field, input }) => ({
-            ...componentProps,
-            checked: field.value,
-            name: field.name,
-            onChange: (event) => input.onChange(event.currentTarget.checked),
-          }),
-          name: "accepted",
-        },
-      ],
-      formPostfix: "Terms",
-      onSubmit: () => undefined,
-      validationSchema: schema,
-    }),
-  );
+  const factory = createZustikFormSlice({
+    defaultValues: { accepted: false },
+    fields: {
+      accepted: {
+        component: Checkbox,
+        mapProps: ({ field, input, props }) => ({
+          checked: field.value,
+          color: props.color,
+          name: field.name,
+          onChange: (event) => input.onChange(event.currentTarget.checked),
+        }),
+        props: { color: "primary" },
+      },
+    },
+    formPostfix: "Terms",
+    onSubmit: () => undefined,
+    validationSchema: schema,
+  });
+  const store = createFormStore(factory);
 
-  let form = store.getState().zustikFormTerms.form;
+  let form = store.getState().zustikFormTerms;
   assert.equal(form.errors[FORM_ERROR], "You must accept");
-  assert.equal(form.components[0].props.checked, false);
-  form.components[0].props.onChange({ currentTarget: { checked: true } });
-  form = store.getState().zustikFormTerms.form;
+  assert.equal(form.components.accepted.props.checked, false);
+  form.components.accepted.props.onChange({
+    currentTarget: { checked: true },
+  });
+  form = store.getState().zustikFormTerms;
   assert.equal(form.values.accepted, true);
   assert.equal(form.valid, true);
-  assert.equal(form.components[0].props.checked, true);
+  assert.equal(form.components.accepted.props.checked, true);
 });
 
-test("rejects invalid postfixes and duplicate field names before changing state", () => {
-  const store = createManager();
+test("validates configuration before a store is created", () => {
   assert.throws(
     () =>
-      store.getState().createForm({
+      createZustikFormSlice({
         defaultValues: { value: "" },
-        fields: [{ name: "value" }],
+        fields: { value: {} },
         formPostfix: "bad postfix",
         onSubmit: () => undefined,
       }),
@@ -377,45 +359,59 @@ test("rejects invalid postfixes and duplicate field names before changing state"
   );
   assert.throws(
     () =>
-      store.getState().createForm({
+      createZustikFormSlice({
         defaultValues: { value: "" },
-        fields: [{ name: "value" }, { name: "value" }],
-        formPostfix: "Duplicate",
+        fields: { missing: {} },
+        formPostfix: "Missing",
         onSubmit: () => undefined,
       }),
-    /Duplicate field name/,
+    /does not exist in defaultValues/,
   );
-  assert.equal(store.getState().zustikFormDuplicate, undefined);
+  assert.throws(
+    () =>
+      createZustikFormSlice({
+        defaultValues: { value: "" },
+        fields: { value: { props: { label: "No component" } } },
+        formPostfix: "HeadlessProps",
+        onSubmit: () => undefined,
+      }),
+    /require a component/,
+  );
+  assert.throws(
+    () =>
+      createZustikFormSlice({
+        defaultValues: { value: "" },
+        fields: { value: { dependsOn: ["value"] } },
+        formPostfix: "Dependency",
+        onSubmit: () => undefined,
+      }),
+    /requires mapProps/,
+  );
 });
 
-test("deep-clones defaults and initialized values", () => {
+test("deep-clones defaults once for the factory and again for every store", () => {
   const defaults = { profile: { name: "Original" } };
-  const definition = defineZustikForm({
+  const factory = createZustikFormSlice({
     defaultValues: defaults,
-    fields: [{ name: "profile.name" }],
+    fields: { "profile.name": {} },
     formPostfix: "Cloned",
     onSubmit: () => undefined,
   });
-  defaults.profile.name = "Mutated before create";
+  defaults.profile.name = "Mutated before store";
 
-  const store = createManager();
-  store.getState().createForm(definition);
-  assert.equal(
-    store.getState().zustikFormCloned.form.values.profile.name,
-    "Original",
-  );
+  const first = createFormStore(factory);
+  const second = createFormStore(factory);
+  assert.equal(first.getState().zustikFormCloned.values.profile.name, "Original");
+  assert.equal(second.getState().zustikFormCloned.values.profile.name, "Original");
 
-  definition.defaultValues.profile.name = "Mutated after create";
-  assert.equal(
-    store.getState().zustikFormCloned.form.values.profile.name,
-    "Original",
-  );
+  first.getState().zustikFormCloned.setValue("profile.name", "First");
+  assert.equal(second.getState().zustikFormCloned.values.profile.name, "Original");
 
   const initialized = { profile: { name: "Initialized" } };
-  store.getState().zustikFormCloned.form.initialize(initialized);
+  first.getState().zustikFormCloned.initialize(initialized);
   initialized.profile.name = "Mutated externally";
   assert.equal(
-    store.getState().zustikFormCloned.form.values.profile.name,
+    first.getState().zustikFormCloned.values.profile.name,
     "Initialized",
   );
 });
@@ -423,206 +419,142 @@ test("deep-clones defaults and initialized values", () => {
 test("requires structured-cloneable form values", () => {
   assert.throws(
     () =>
-      defineZustikForm({
+      createZustikFormSlice({
         defaultValues: {
-          profile: { name: "Original" },
           transform: () => undefined,
+          value: "Original",
         },
-        fields: [{ name: "profile.name" }],
+        fields: { value: {} },
         formPostfix: "NonCloneable",
         onSubmit: () => undefined,
       }),
     /structured-cloneable/,
   );
 
-  assert.throws(
-    () =>
-      defineZustikForm({
-        cloneValues: (values) => ({ ...values }),
-        defaultValues: { value: "" },
-        fields: [{ name: "value" }],
-        formPostfix: "CustomClone",
-        onSubmit: () => undefined,
-      }),
-    /cloneValues is not supported/,
+  const store = createFormStore(
+    createZustikFormSlice({
+      defaultValues: { value: "Original" },
+      fields: { value: {} },
+      formPostfix: "StructuredValues",
+      onSubmit: () => undefined,
+    }),
   );
-
-  const store = createManager();
-  store.getState().createForm({
-    defaultValues: { value: "Original" },
-    fields: [{ name: "value" }],
-    formPostfix: "StructuredValues",
-    onSubmit: () => undefined,
-  });
-
-  const form = store.getState().zustikFormStructuredValues.form;
   assert.throws(
     () =>
-      form.initialize({
+      store.getState().zustikFormStructuredValues.initialize({
         transform: () => undefined,
         value: "Changed",
       }),
     /structured-cloneable/,
   );
   assert.equal(
-    store.getState().zustikFormStructuredValues.form.values.value,
+    store.getState().zustikFormStructuredValues.values.value,
     "Original",
   );
 });
 
-test("preserves component collection references for unrelated field state", () => {
-  const store = createManager();
-  store.getState().createForm(makeCommentDefinition());
-
-  const before = store.getState().zustikFormComment.form;
-  before.change("profile.displayName", "Ada");
-  const afterHeadlessChange = store.getState().zustikFormComment.form;
+test("preserves keyed projection references for unrelated field updates", () => {
+  const store = createFormStore(makeCommentFactory());
+  const before = store.getState().zustikFormComment;
+  before.setValue("profile.displayName", "Ada");
+  const afterHeadlessChange = store.getState().zustikFormComment;
 
   assert.equal(afterHeadlessChange.components, before.components);
-  assert.equal(afterHeadlessChange.projectionErrors, before.projectionErrors);
-  assert.equal(afterHeadlessChange.components[0], before.components[0]);
-  assert.equal(afterHeadlessChange.fields[0], before.fields[0]);
-  assert.notEqual(afterHeadlessChange.fields[1], before.fields[1]);
+  assert.equal(afterHeadlessChange.components.comment, before.components.comment);
+  assert.equal(afterHeadlessChange.fields.comment, before.fields.comment);
+  assert.notEqual(
+    afterHeadlessChange.fields["profile.displayName"],
+    before.fields["profile.displayName"],
+  );
+  assert.notEqual(afterHeadlessChange.fieldProps, before.fieldProps);
+  assert.equal(
+    afterHeadlessChange.fieldProps.comment,
+    before.fieldProps.comment,
+  );
 
-  afterHeadlessChange.fields[0].onFocus();
-  const afterFocus = store.getState().zustikFormComment.form;
+  afterHeadlessChange.fields.comment.onFocus();
+  const afterFocus = store.getState().zustikFormComment;
   assert.equal(afterFocus.components, before.components);
-  assert.equal(afterFocus.components[0], before.components[0]);
-  assert.notEqual(afterFocus.fields[0], before.fields[0]);
+  assert.equal(afterFocus.components.comment, before.components.comment);
+  assert.notEqual(afterFocus.fields.comment, before.fields.comment);
 });
 
-test("publishes mapper failures without losing the latest engine values", () => {
+test("publishes mapper failures without losing current engine values", () => {
   function MappedInput() {
     return null;
   }
 
-  const store = createManager();
-  store.getState().createForm(
-    defineZustikForm({
-      defaultValues: { value: "ready" },
-      fields: [
-        {
-          component: MappedInput,
-          componentProps: { label: "Mapped" },
-          mapComponentProps: ({ componentProps, field, input }) => {
-            if (field.value === "explode") throw new Error("mapper exploded");
-            return {
-              ...componentProps,
-              name: field.name,
-              onChange: (value) => input.onChange(value),
-              value: field.value,
-            };
-          },
-          name: "value",
+  const factory = createZustikFormSlice({
+    defaultValues: { value: "ready" },
+    fields: {
+      value: {
+        component: MappedInput,
+        mapProps: ({ field, input, props }) => {
+          if (field.value === "explode") throw new Error("mapper exploded");
+          return {
+            label: props.label,
+            name: field.name,
+            onChange: (value) => input.onChange(value),
+            value: field.value,
+          };
         },
-      ],
-      formPostfix: "Projection",
-      onSubmit: () => undefined,
-    }),
-  );
-
+        props: { label: "Mapped" },
+      },
+    },
+    formPostfix: "Projection",
+    onSubmit: () => undefined,
+  });
+  const store = createFormStore(factory);
   const initialElement =
-    store.getState().zustikFormProjection.form.components[0];
+    store.getState().zustikFormProjection.components.value;
+
   assert.doesNotThrow(() =>
-    store.getState().zustikFormProjection.form.change("value", "explode"),
+    store.getState().zustikFormProjection.setValue("value", "explode"),
   );
-  let form = store.getState().zustikFormProjection.form;
+  let form = store.getState().zustikFormProjection;
   assert.equal(form.values.value, "explode");
   assert.equal(form.hasProjectionErrors, true);
   assert.match(String(form.projectionErrors.value), /mapper exploded/);
-  assert.equal(form.fieldsByName.value.projectionError.message, "mapper exploded");
-  assert.equal(form.components[0], initialElement);
-  assert.equal(form.components[0].props.value, "ready");
+  assert.equal(form.fields.value.projectionError.message, "mapper exploded");
+  assert.equal(form.components.value, initialElement);
+  assert.equal(form.components.value.props.value, "ready");
 
-  form.change("value", "recovered");
-  form = store.getState().zustikFormProjection.form;
+  form.setValue("value", "recovered");
+  form = store.getState().zustikFormProjection;
   assert.equal(form.values.value, "recovered");
   assert.equal(form.hasProjectionErrors, false);
   assert.deepEqual({ ...form.projectionErrors }, {});
-  assert.equal(form.fieldsByName.value.projectionError, undefined);
-  assert.equal(form.components[0].props.value, "recovered");
+  assert.equal(form.fields.value.projectionError, undefined);
+  assert.equal(form.components.value.props.value, "recovered");
 });
 
-test("rejects foreign undefined slots but lets an owner recreate tombstones", () => {
-  const slice = zustikFormCreate();
-  const store = createStore()((set, get, api) => ({
-    ...slice(set, get, api),
-    zustikFormReserved: undefined,
-  }));
-  const definition = defineZustikForm({
-    defaultValues: { value: "" },
-    fields: [{ name: "value" }],
-    formPostfix: "Reserved",
-    onSubmit: () => undefined,
-  });
-
-  assert.throws(() => store.getState().createForm(definition), /already used/);
-
-  const owner = createManager();
-  owner.getState().createForm(definition);
-  assert.equal(owner.getState().destroyForm("Reserved"), true);
-  assert.doesNotThrow(() => owner.getState().createForm(definition));
-});
-
-test("uses radio values and validates field definition paths", () => {
+test("uses radio values and projects array length metadata", () => {
   function Radio() {
     return null;
   }
 
-  const store = createManager();
-  store.getState().createForm(
-    defineZustikForm({
+  const radioStore = createFormStore(
+    createZustikFormSlice({
       defaultValues: { color: "blue" },
-      fields: [{ component: Radio, name: "color" }],
+      fields: { color: { component: Radio } },
       formPostfix: "Radio",
       onSubmit: () => undefined,
     }),
   );
-  store.getState().zustikFormRadio.form.components[0].props.onChange({
+  radioStore.getState().zustikFormRadio.components.color.props.onChange({
     currentTarget: { checked: true, type: "radio", value: "red" },
   });
-  assert.equal(store.getState().zustikFormRadio.form.values.color, "red");
+  assert.equal(radioStore.getState().zustikFormRadio.values.color, "red");
 
-  assert.throws(
-    () =>
-      defineZustikForm({
-        defaultValues: { value: "" },
-        fields: [{ name: "missing" }],
-        formPostfix: "MissingDefault",
-        onSubmit: () => undefined,
-      }),
-    /does not exist in defaultValues/,
-  );
-  assert.throws(
-    () =>
-      defineZustikForm({
-        defaultValues: { value: "" },
-        fields: [
-          {
-            component: Radio,
-            controlledProps: ["checked"],
-            name: "value",
-          },
-        ],
-        formPostfix: "MissingMapper",
-        onSubmit: () => undefined,
-      }),
-    /mapComponentProps is required/,
-  );
-});
-
-test("projects field-specific array length metadata", () => {
-  const store = createManager();
-  store.getState().createForm(
-    defineZustikForm({
+  const tagsStore = createFormStore(
+    createZustikFormSlice({
       defaultValues: { tags: ["one"] },
-      fields: [{ name: "tags" }],
+      fields: { tags: {} },
       formPostfix: "Tags",
       onSubmit: () => undefined,
     }),
   );
-
-  assert.equal(store.getState().zustikFormTags.form.fields[0].length, 1);
-  store.getState().zustikFormTags.form.change("tags", ["one", "two"]);
-  assert.equal(store.getState().zustikFormTags.form.fields[0].length, 2);
+  assert.equal(tagsStore.getState().zustikFormTags.fields.tags.length, 1);
+  tagsStore.getState().zustikFormTags.setValue("tags", ["one", "two"]);
+  assert.equal(tagsStore.getState().zustikFormTags.fields.tags.length, 2);
 });

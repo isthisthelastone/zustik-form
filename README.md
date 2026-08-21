@@ -1,27 +1,50 @@
 # zustik-form
 
-Typed, dynamic form view-models for Zustand, powered by vanilla Final Form,
-Valibot, and `React.createElement`.
+Static, typed form slices for Zustand, powered by vanilla Final Form, Valibot,
+and React.
 
-`zustik-form` is a form-slice factory for applications that want form state to
-live beside the rest of their Zustand state without adopting a React-specific
-form runtime. A form definition is registered at runtime, backed by a vanilla
-Final Form instance, validated by Valibot, and projected into a fully typed
-Zustand slot such as `zustikFormComment`.
+`zustik-form` keeps form values, validation state, field bindings, submission,
+and reset behavior inside the same Zustand store as the rest of an application.
+Each call to `createZustikFormSlice()` configures exactly one form and returns an
+ordinary Zustand slice factory. Spread that factory wherever the form belongs.
 
-The library itself has no hooks, effects, context provider, component wrapper,
-or mount/unmount lifecycle. It creates immutable React element descriptions for
-component-backed fields; your application decides when forms are created,
-rendered, replaced, reset, and destroyed.
+```text
+form configuration
+        ↓
+createZustikFormSlice(...)
+        ↓
+static Zustand slice factory
+        ↓
+zustikForm<UserValidation>
+        ↓
+values · fields · fieldProps · components · actions
+```
+
+Version `0.2.0` deliberately replaces the dynamic form registry from `0.1.x`.
+See [Why static slices?](#why-static-slices) and
+[Migrating from 0.1.x](#migrating-from-01x).
+
+## What it provides
+
+- One statically configured form per slice factory.
+- One source of truth in Zustand; no second React form state.
+- Typed field paths, input values, and Valibot-transformed submit output.
+- A form that exists immediately when its Zustand store is created.
+- Named `fieldProps` that can be spread onto your own controls.
+- Named, fully bound React elements when components are configured up front.
+- Ready-to-spread native `formProps` for submit, reset, and ID wiring.
+- Synchronous and asynchronous Valibot validation.
+- Final Form metadata and an escape hatch to its vanilla API.
+- No hooks, context provider, wrapper component, or mount lifecycle inside the
+  library.
 
 ## Requirements
 
-- React **exactly 18.3.1**. This is the current peer requirement.
+- React **18.3.1**.
 - Zustand `>=5.0.0 <6.0.0`.
-- Node.js 18 or newer for Node-based use, builds, and tests.
-- ESM. Use `import`; CommonJS `require()` is not supported.
-- TypeScript 5.0 or newer for the published declarations. The project is built
-  and tested with TypeScript 7.0.2.
+- Node.js 18 or newer for Node-based builds and tests.
+- ESM (`import`); CommonJS `require()` is not supported.
+- TypeScript 5.0 or newer for the published declarations.
 - A runtime with `structuredClone`. Form values must be structured-cloneable.
 
 ## Installation
@@ -30,209 +53,150 @@ rendered, replaced, reset, and destroyed.
 pnpm add zustik-form react@18.3.1 zustand@^5 valibot
 ```
 
-Final Form is an internal dependency. Valibot is listed explicitly above
-because application code normally imports it to author schemas.
+Final Form is an internal dependency. Application code normally imports
+Valibot directly to define schemas.
 
-## Architecture
+## Quick start
 
-The design follows an MVVM-like split:
+### Configure one static form factory
 
-```text
-Form definition
-  fields, defaults, schema, callbacks, components
-                         |
-                         v
-Model
-  vanilla Final Form + Valibot validation
-                         |
-                         v
-View-model
-  Zustand slot: values, metadata, typed commands, field views, React elements
-                         |
-                         v
-View
-  your React markup, components, or headless bindings
-```
-
-- **Model:** Final Form owns form values, field registration, metadata,
-  validation state, submission state, and reset behavior. Valibot supplies
-  synchronous or asynchronous validation and typed submission output.
-- **View-model:** `zustikFormCreate()` contributes manager actions to your store.
-  Calling `createForm()` creates a dynamic slot named from `formPostfix`.
-- **View:** component-backed fields are described with `React.createElement`.
-  Headless field state and handlers are available for custom rendering.
-
-There is no second React state machine and no React lifecycle hidden inside the
-library. The ordinary Zustand hook in the examples below belongs to the
-application, not to `zustik-form`.
-
-## Typed quick start
-
-### 1. Define a component and form
-
-Use `defineZustikField<T>()` when component props and field values should be
-checked together. `defineZustikForm()` preserves the form postfix, field tuple,
-Valibot input, and Valibot output types.
+Field paths are the keys of `fields`; they are not repeated inside every field
+definition. The schema supplies the input and transformed output types, while
+the rest of the configuration is inferred from the object passed to the
+factory.
 
 ```tsx
-import type {
-  ChangeEvent,
-  ComponentType,
-  FocusEvent,
-} from "react";
+import type { ChangeEvent, ComponentType } from "react";
 import * as v from "valibot";
 
 import {
-  defineZustikField,
-  defineZustikForm,
+  createZustikFormSlice,
   valueFromEvent,
 } from "zustik-form";
 
-const CommentSchema = v.object({
-  comment: v.pipe(
+const UserValidationSchema = v.object({
+  username: v.pipe(
     v.string(),
-    v.transform((value) => value.trim()),
-    v.minLength(1, "A comment is required"),
-    v.maxLength(256, "Use at most 256 characters"),
+    v.trim(),
+    v.minLength(3, "Use at least three characters"),
+  ),
+  password: v.pipe(
+    v.string(),
+    v.minLength(8, "Use at least eight characters"),
   ),
 });
 
-type CommentInput = v.InferInput<typeof CommentSchema>;
-
 interface TextFieldProps {
-  fullWidth: boolean;
   label: string;
   name: string;
+  onBlur(): void;
+  onChange(event: ChangeEvent<HTMLInputElement>): void;
+  onFocus(): void;
+  type?: "text" | "password";
   value: string;
-  onBlur?: (event: FocusEvent<HTMLInputElement>) => void;
-  onChange: (event: ChangeEvent<HTMLInputElement>) => void;
-  onFocus?: (event: FocusEvent<HTMLInputElement>) => void;
 }
 
-const TextField: ComponentType<TextFieldProps> = ({
-  fullWidth,
-  label,
-  ...inputProps
-}) => (
-  <label style={{ display: fullWidth ? "block" : "inline-block" }}>
+const TextField: ComponentType<TextFieldProps> = ({ label, ...inputProps }) => (
+  <label>
     {label}
     <input {...inputProps} />
   </label>
 );
 
-const commentField = defineZustikField<CommentInput>();
-
-export const commentDefinition = defineZustikForm({
-  formId: "comment-form",
-  formPostfix: "Comment",
-  validationSchema: CommentSchema,
+export const createUserValidationFormSlice = createZustikFormSlice({
+  formId: "user-validation-form",
+  formPostfix: "UserValidation",
+  validationSchema: UserValidationSchema,
   defaultValues: {
-    comment: "",
+    username: "",
+    password: "",
   },
-  fields: [
-    commentField({
-      name: "comment",
+  fields: {
+    username: {
       component: TextField,
-      componentProps: {
-        fullWidth: true,
-        label: "Comment",
-      },
+      props: { label: "Username" },
       valueFromChange: valueFromEvent,
-    }),
-  ] as const,
+    },
+    password: {
+      component: TextField,
+      props: { label: "Password", type: "password" },
+      valueFromChange: valueFromEvent,
+    },
+  },
   onSubmit: async (values, context) => {
-    // `values.comment` is the trimmed Valibot output.
-    // `context.inputValues.comment` is the untransformed form input.
-    console.log(values, context.inputValues, context.formId);
+    // `values` is the Valibot output.
+    // `context.inputValues` is the untransformed input held in Zustand.
+    await saveUser(values);
   },
   onReset: ({ previousValues }) => {
-    // This additional action runs after reset state is visible in Zustand.
-    console.log("Reset previous values", previousValues);
+    console.log("Reset values", previousValues);
   },
 });
 ```
 
-The component's controlled `name`, `value`, `onChange`, `onBlur`, and `onFocus`
-props are injected by the library. All other required component props must be
-provided through `componentProps`.
+The factory call validates and snapshots the configuration. Calling the
+returned slice factory creates a fresh Final Form runtime and a fresh copy of
+the defaults for that particular Zustand store.
 
-### 2. Compose the form slice into a store
+### Spread the factory into a store
 
-The registry is the source of compile-time knowledge about dynamic slots. A
-registry key must match that definition's literal `formPostfix`.
+The factory does not receive a form registry or the application's entire state
+as generic arguments.
 
 ```ts
 import { create } from "zustand";
+import type { ZustikFormSlice } from "zustik-form";
 
-import {
-  zustikFormCreate,
-  type ZustikFormSlice,
-} from "zustik-form";
+import { createUserValidationFormSlice } from "./user-validation-form.js";
 
-import { commentDefinition } from "./comment-form.js";
+type UserValidationFormSlice = ZustikFormSlice<
+  typeof createUserValidationFormSlice
+>;
 
-interface Forms {
-  Comment: typeof commentDefinition;
-}
-
-type AppState = ZustikFormSlice<Forms> & {
+type AppState = UserValidationFormSlice & {
   count: number;
   increment(): void;
-  initializeForms(): void;
 };
 
-const createFormsSlice = zustikFormCreate<Forms, AppState>();
-
-export const useOurStore = create<AppState>()((set, get, store) => ({
-  ...createFormsSlice(set, get, store),
+export const useAppStore = create<AppState>()((set, get, store) => ({
+  ...createUserValidationFormSlice(set, get, store),
   count: 0,
   increment: () => set((state) => ({ count: state.count + 1 })),
-  initializeForms: () => {
-    if (!get().hasForm("Comment")) {
-      get().createForm(commentDefinition);
-    }
-  },
 }));
 ```
 
-Create forms after the Zustand store itself exists. For a client-only singleton
-store, application bootstrap can be as simple as:
+`ReturnType<typeof createUserValidationFormSlice>` is equivalent to
+`ZustikFormSlice<typeof createUserValidationFormSlice>` if you prefer the
+built-in TypeScript utility.
+
+The form is immediately available at:
 
 ```ts
-useOurStore.getState().initializeForms();
+useAppStore.getState().zustikFormUserValidation;
 ```
 
-For SSR, create and initialize a fresh store per request instead. See
-[SSR and hydration](#ssr-and-hydration).
+It is not optional, and no bootstrap or `createForm()` action is required.
 
-### 3. Render the projected elements
+## Rendering mode 1: configured components
 
-The dynamic slot is optional because it does not exist until `createForm()` is
-called.
+When a field supplies `component`, `zustik-form` combines its static `props`
+with the live `name`, `value`, `onChange`, `onBlur`, and `onFocus` bindings. It
+returns the resulting keyed React element under the field's name.
 
 ```tsx
-import { useOurStore } from "./store.js";
+import { useAppStore } from "./store.js";
 
-export function CommentForm() {
-  const form = useOurStore((state) => state.zustikFormComment?.form);
-
-  if (form === undefined) return null;
+export function UserValidationForm() {
+  const form = useAppStore((state) => state.zustikFormUserValidation);
+  const { username, password } = form.components;
 
   return (
-    <form
-      id={form.formId}
-      onReset={form.onReset}
-      onSubmit={form.onSubmit}
-    >
-      {form.components}
-
-      {form.fieldsByName.comment.touched &&
-      form.fieldsByName.comment.error !== undefined ? (
-        <p role="alert">{String(form.fieldsByName.comment.error)}</p>
-      ) : null}
+    <form {...form.formProps} noValidate>
+      <div>{username}</div>
+      <div>{password}</div>
 
       <button type="submit" disabled={form.submitting}>
-        {form.submitting ? "Submitting…" : "Submit"}
+        Submit
       </button>
       <button type="reset">Reset</button>
     </form>
@@ -240,659 +204,441 @@ export function CommentForm() {
 }
 ```
 
-`components` is already an ordered array of keyed React elements. It contains
-only fields that supplied a component. `React.createElement` creates the element
-descriptions; it does not invoke or mount the field component.
+No render-time props are required. The configured fields already know their
+components, additional props, current values, handlers, validation state, and
+React keys.
 
-## Dynamic names and form IDs
+`components` is a keyed object rather than an array. Your JSX determines the
+layout and ordering explicitly.
 
-### `formPostfix`
+## Rendering mode 2: named field props
 
-`formPostfix` determines both registry identity and the dynamic Zustand key:
-
-| `formPostfix` | Zustand slot |
-| --- | --- |
-| `"Comment"` | `zustikFormComment` |
-| `"groceryFields"` | `zustikFormgroceryFields` |
-
-The value is concatenated exactly; its case is not changed. It must match
-`^[A-Za-z][A-Za-z0-9]*$`: a non-empty ASCII identifier beginning with a letter.
-PascalCase is recommended when it makes generated names easier to read, but it
-is not required.
-
-Duplicate live postfixes are rejected unless explicit replacement is requested.
-Creation is also rejected if the generated Zustand key is already occupied by
-another part of the store, even when that foreign property currently contains
-`undefined`. Do not predeclare dynamic slot keys; the manager reserves and
-creates them itself.
-
-### `formId`
-
-`formId` is a stable ID for a single live form runtime. The library exposes it;
-it does not render a `<form>` element or apply the ID automatically:
-
-```tsx
-<form id={form.formId} onSubmit={form.onSubmit}>
-  {form.components}
-</form>
-
-<button type="submit" form={form.formId}>
-  Submit from outside the form
-</button>
-```
-
-An explicit ID must match `^[A-Za-z][A-Za-z0-9:._-]*$`. IDs are unique within
-one form-slice manager. Reusing the same ID for another live postfix throws.
-
-When `formId` is omitted, the manager generates:
-
-```text
-zustik-<formPostfix>-<generation>
-```
-
-For example, the first `Comment` form is normally `zustik-Comment-1`.
-
-Generated IDs are per manager, not globally unique across stores. They can also
-change when a form is destroyed and recreated or replaced. Supply an explicit
-ID when:
-
-- two store instances can render into the same document;
-- server and client creation order might differ;
-- another element or external system needs a stable reference;
-- a replacement must retain the same ID.
-
-The resolved ID is available as `form.formId` and in both submit and reset
-callback contexts.
-
-## Fields
-
-Every configured field is registered with Final Form when its form is created.
-Fields support dot paths and array indices, with TypeScript path inference
-capped at five nested levels for compiler performance.
-
-Each form exposes:
-
-- `fields`: the ordered, typed tuple corresponding to the definition;
-- `fieldsByName`: the same field views keyed by literal field path;
-- `components`: the ordered React elements for component-backed fields only.
-
-A field view includes its current `value`, validation and submission errors,
-focus/touch/dirty metadata, array `length`, direct `onChange(value)`, `onBlur()`,
-and `onFocus()` handlers, resolved `props`, optional `component`, and optional
-`element`. Every configured field path must exist in `defaultValues`. Runtime
-paths use safe dot-separated identifier or numeric segments, such as
-`profile.displayName` or `items.0.name`.
-
-### Headless fields
-
-A field without `component` is headless. Its `element` is `undefined`, but its
-typed state and handlers remain available:
-
-Assume the store registry contains a `Profile` definition with a headless
-`profile.displayName` field:
-
-```tsx
-function DisplayNameInput() {
-  const field = useOurStore(
-    (state) =>
-      state.zustikFormProfile?.form.fieldsByName["profile.displayName"],
-  );
-
-  if (field === undefined) return null;
-
-  return (
-    <label>
-      Display name
-      <input
-        name={field.name}
-        value={field.value}
-        onChange={(event) => field.onChange(event.currentTarget.value)}
-        onFocus={field.onFocus}
-        onBlur={field.onBlur}
-      />
-      {field.touched && field.error !== undefined ? (
-        <span role="alert">{String(field.error)}</span>
-      ) : null}
-    </label>
-  );
-}
-```
-
-Headless bindings are useful for native inputs, design-system adapters, render
-props, non-React consumers of the Zustand store, and cases where the view must
-control markup precisely.
-
-### Default component binding
-
-Without `mapComponentProps`, `zustik-form` starts with `componentProps` and then
-injects these managed props:
-
-- `name`;
-- current `value`;
-- `onChange`;
-- `onBlur`;
-- `onFocus`.
-
-Managed props cannot be replaced by a value in `componentProps`. User-supplied
-event callbacks are composed: Final Form updates first, then the callback in
-`componentProps` runs. A callback can therefore read the already-updated store.
-
-The default `onChange` accepts either a raw value or an event-like first
-argument. For an event it reads `currentTarget` first, then `target`. Checkbox
-inputs use `checked`; radio and other targets use `value`.
-
-For an explicit and type-safe conversion, supply `valueFromChange`:
+A field may omit `component`. It then cannot accept component `props`, but the
+form still exposes a named, ready-to-spread binding through `fieldProps`.
 
 ```ts
-import { checkedFromEvent, valueFromEvent } from "zustik-form";
-
-commentField({
-  name: "comment",
-  component: TextField,
-  componentProps: { fullWidth: true, label: "Comment" },
-  valueFromChange: valueFromEvent,
+export const createLoginFormSlice = createZustikFormSlice({
+  formPostfix: "Login",
+  defaultValues: {
+    email: "",
+    password: "",
+  },
+  fields: {
+    email: {},
+    password: {},
+  },
+  onSubmit: submitLogin,
 });
-
-// `checkedFromEvent` performs the corresponding boolean extraction.
 ```
-
-### Custom component mapping
-
-Use `mapComponentProps` when a component does not use the conventional
-`name`/`value` contract. The mapper owns the complete final props object.
 
 ```tsx
-import type { ChangeEvent, ComponentType } from "react";
+export function LoginForm() {
+  const form = useAppStore((state) => state.zustikFormLogin);
+  const { email, password } = form.fieldProps;
 
-interface CheckboxProps {
-  checked: boolean;
-  color: "primary" | "neutral";
-  name: string;
-  onChange(event: ChangeEvent<HTMLInputElement>): void;
+  return (
+    <form {...form.formProps}>
+      <input {...email} type="email" />
+      <input {...password} type="password" />
+      <button type="submit">Log in</button>
+    </form>
+  );
 }
-
-const Checkbox: ComponentType<CheckboxProps> = ({ color: _, ...props }) => (
-  <input {...props} type="checkbox" />
-);
-
-const termsField = defineZustikField<{ accepted: boolean }>();
-
-const acceptedField = termsField({
-  name: "accepted",
-  component: Checkbox,
-  // These props are returned by mapComponentProps, not supplied by the caller.
-  controlledProps: ["checked", "name", "onChange"] as const,
-  componentProps: {
-    color: "primary",
-  },
-  mapComponentProps: ({ componentProps, field, input }) => ({
-    ...componentProps,
-    checked: field.value,
-    name: field.name,
-    onChange: (event) => input.onChange(event.currentTarget.checked),
-  }),
-});
 ```
 
-`controlledProps` is the type-level declaration of which required component
-props the mapper produces. The mapper still has to return them at runtime.
+`fieldProps` is available for every field, including component-backed fields.
+This makes it possible to switch rendering approaches without changing form
+state or validation.
 
-Custom mapping bypasses the default prop injection, event-value extraction,
-`valueFromChange`, and automatic user-callback composition. Call the supplied
-`input` handlers explicitly, as the checkbox mapper does above.
+The default `onChange` accepts a raw value or an event-like first argument. It
+reads `currentTarget` before `target`, uses `checked` for checkboxes, and uses
+`value` otherwise. Use `valueFromEvent`, `checkedFromEvent`, or a custom
+`valueFromChange` when explicit conversion is preferable.
 
-The mapper receives:
+## Reading field state
 
-- `componentProps`: caller-supplied, non-controlled props;
-- `field`: the current field render state;
-- `input`: raw typed Final Form handlers;
-- `values`: all current input values.
+`fields` is keyed by the same field paths as the configuration:
 
-Keep mappers pure. Use `input` inside the event callbacks returned by the
-mapper, not while the mapper itself is calculating props.
+```ts
+const form = useAppStore.getState().zustikFormUserValidation;
 
-If the mapper reads other form values, list their paths in `dependsOn` so its
-element is rebuilt only when the field state or those values change. Without
-`dependsOn`, any form-value change can rerun the mapper.
+form.fields.username.value;
+form.fields.username.touched;
+form.fields.username.error;
+form.fields.username.onChange("Ada");
+```
 
-`renderKey` overrides the default React key, which is the field name. `key` and
-`ref` returned from a mapper are deliberately removed from component props;
-`renderKey` is the supported key mechanism and refs are not managed by this
-library.
+Nested paths remain literal keys:
 
-`isEqual` can be supplied on any field to pass a custom field-value comparator
-to Final Form.
+```ts
+const createProfileFormSlice = createZustikFormSlice({
+  formPostfix: "Profile",
+  defaultValues: {
+    profile: { displayName: "" },
+  },
+  fields: {
+    "profile.displayName": {},
+  },
+  onSubmit: saveProfile,
+});
 
-### Projection errors
+form.fields["profile.displayName"];
+form.fieldProps["profile.displayName"];
+```
 
-A custom mapper executes in the store projection layer, outside React render.
-If it throws while a live form updates, Final Form's latest values and metadata
-are still published. The last valid element is retained and the failure is
-exposed through `field.projectionError`, `form.projectionErrors`, and
-`form.hasProjectionErrors`. A later successful projection clears it. A mapper
-that throws during initial creation or replacement aborts staging, so an
-existing form remains untouched.
+Field paths support objects and numeric array segments, with type inference
+capped at five nested levels for compiler performance. Every configured path is
+validated against `defaultValues` when the factory is created.
+
+## Form actions
+
+Actions live on the static form value:
+
+```ts
+const form = useAppStore.getState().zustikFormUserValidation;
+
+form.setValue("username", "Ada");
+form.change("username", "Ada"); // Final Form-compatible alias
+form.focus("username");
+form.blur("username");
+form.initialize({ username: "Grace", password: "secret123" });
+await form.reset();
+const result = await form.submit();
+```
+
+- `setValue()` and `change()` update one typed field path.
+- `initialize()` replaces the form's initial values with a cloned input object.
+- `reset()` restarts Final Form and then runs the configured `onReset` callback.
+- `submit()` validates, parses through Valibot, and invokes the configured
+  `onSubmit` callback.
+- Concurrent public `submit()` calls share one pending promise.
+
+`form.formProps` contains `{ id, onSubmit, onReset }` for a native `<form>`.
+The event handlers call `preventDefault()` and delegate to the same actions.
+
+Submission resolves to one of:
+
+```ts
+{ status: "succeeded" }
+{ status: "invalid", errors }
+{ status: "submission-error", errors }
+```
+
+Exceptions thrown by `onSubmit` reject normally.
 
 ## Validation with Valibot
 
-`validationSchema` is optional. When present, it must accept an object input.
-Both synchronous and asynchronous Valibot schemas are supported.
+`validationSchema` is optional. Synchronous and asynchronous Valibot schemas
+are supported.
 
-Validation issues are converted to Final Form errors as follows:
+- The Zustand form values retain the schema's input shape.
+- `onSubmit` receives the schema's output shape.
+- The first issue for a field path becomes that field's validation error.
+- A pathless issue becomes Final Form's `FORM_ERROR`.
+- Rejected schema execution settles as a form-level error.
+- Final Form prevents older async validation results from replacing newer ones.
 
-- the first issue for each field path becomes that field's error;
-- nested paths retain their nested error shape;
-- the first pathless/root issue becomes Final Form's `FORM_ERROR`;
-- an exception or rejection inside schema execution settles as a form-level
-  error instead of leaving validation pending;
-- successful validation exposes `form.errors` as `undefined`.
-
-Read a field error from the field view and the root validation error from
-`form.error`:
-
-```tsx
-const emailError = form.fieldsByName.email.error;
+```ts
+const emailError = form.fields.email.error;
 const rootError = form.error;
 ```
 
-`FORM_ERROR` and `ARRAY_ERROR` are re-exported for submission errors or
-advanced Final Form use:
+`FORM_ERROR` and `ARRAY_ERROR` are re-exported for form-level and array-level
+submission errors.
+
+An `onSubmit` callback may return field or form errors:
 
 ```ts
 import { FORM_ERROR } from "zustik-form";
 
-const definition = defineZustikForm({
-  // ...
-  onSubmit: async () => {
+onSubmit: async (values) => {
+  const result = await save(values);
+  if (!result.ok) {
     return {
-      [FORM_ERROR]: "The server could not save this form",
+      email: result.emailError,
+      [FORM_ERROR]: result.message,
     };
-  },
-});
-```
-
-### Input and transformed output
-
-The Zustand form state always retains the Valibot **input** shape. Before the
-definition's `onSubmit` callback runs, the current input is parsed again and
-the callback receives Valibot's **output** shape.
-
-```ts
-const QuantitySchema = v.object({
-  quantity: v.pipe(
-    v.string(),
-    v.regex(/^\d+$/, "Enter a whole number"),
-    v.transform(Number),
-  ),
-});
-
-const quantityDefinition = defineZustikForm({
-  formPostfix: "Quantity",
-  validationSchema: QuantitySchema,
-  defaultValues: { quantity: "1" },
-  fields: [{ name: "quantity" }] as const,
-  onSubmit: (output, context) => {
-    output.quantity; // number
-    context.inputValues.quantity; // string
-  },
-});
-```
-
-This separation also appears in the exported `InputOf<TDefinition>` and
-`OutputOf<TDefinition>` utility types.
-
-Final Form protects the live form from out-of-order asynchronous validation
-results. Results from a destroyed or replaced form runtime are not projected
-into its replacement.
-
-## Submission
-
-There are two submission entry points:
-
-- `form.onSubmit(event?)` calls `preventDefault()` when an event is supplied and
-  is suitable for a React `<form onSubmit>` prop;
-- `form.submit()` performs the same submission without an event.
-
-Both resolve to a discriminated result:
-
-```ts
-const result = await form.submit();
-
-switch (result.status) {
-  case "succeeded":
-    break;
-  case "invalid":
-    console.log(result.errors);
-    break;
-  case "submission-error":
-    console.log(result.errors);
-    break;
-  case "destroyed":
-    // This handle belonged to an old or disposed runtime.
-    break;
-}
-```
-
-The definition's `onSubmit` is not called while validation fails. It may return
-field or form submission errors in Final Form's error shape. Thrown or rejected
-errors propagate to the caller. Concurrent calls while a submission is pending
-reuse that pending submission instead of invoking the callback twice.
-
-The submit context contains:
-
-- `formApi`: the live vanilla Final Form API;
-- `formId`: the resolved ID;
-- `formPostfix`: the definition postfix;
-- `inputValues`: the untransformed input values submitted.
-
-## Reset and initialization
-
-`form.reset()` restarts Final Form with its current initial values and clears
-interaction/submission metadata. `form.onReset(event?)` first calls
-`preventDefault()` and then performs the same operation.
-
-The optional definition `onReset` callback is an additional action, not the
-reset implementation. It runs after the reset has synchronously been published
-to Zustand, and it may be asynchronous:
-
-```ts
-onReset: async ({ initialValues, previousValues, formApi, formId }) => {
-  console.log({ initialValues, previousValues, formApi, formId });
+  }
 },
 ```
 
-If this callback throws or rejects, the reset remains committed and the error
-is returned to the caller.
+## Custom component bindings
 
-`form.initialize(nextValues)` establishes new initial values through Final Form.
-The input object is cloned before use. A later reset returns to these latest
-initial values. `options.keepDirtyOnReinitialize` controls Final Form's behavior
-for dirty fields during initialization.
+The default binding works with conventional `name`, `value`, `onChange`,
+`onBlur`, and `onFocus` props. Use `mapProps` for controls such as checkboxes or
+design-system components with a different contract.
 
-## Value isolation and cloning
+```tsx
+interface CheckboxProps {
+  checked: boolean;
+  label: string;
+  name: string;
+  onChange(event: React.ChangeEvent<HTMLInputElement>): void;
+}
 
-Definitions, form creation, and `initialize()` isolate values with
-`structuredClone`. Mutating a source defaults object after definition or an
-initialization object after calling `initialize()` does not mutate the live form.
+const Checkbox: React.ComponentType<CheckboxProps> = (props) => (
+  <label>
+    {props.label}
+    <input
+      checked={props.checked}
+      name={props.name}
+      onChange={props.onChange}
+      type="checkbox"
+    />
+  </label>
+);
 
-Values may contain deeply nested objects and arrays, but they must remain
-structured-cloneable data. Functions, weak collections, DOM nodes, React
-elements, and objects that depend on custom class prototypes are not supported
-as form values. Treat callback context values and live form snapshots as readonly
-even when JavaScript cannot enforce it.
-
-Field definitions and `componentProps` are shallow-copied because configuration
-may contain functions, React nodes, and other non-cloneable objects; treat nested
-configuration objects as immutable after defining the form.
-
-## Form lifecycle
-
-The form manager is explicit because the library has no component lifecycle.
-
-### Create
-
-```ts
-const slot = useOurStore.getState().createForm(commentDefinition);
-slot.form.values;
-```
-
-Calling `createForm()` twice for the same live postfix throws by default. This
-helps catch duplicate initialization and React development behavior early.
-
-### Replace
-
-```ts
-useOurStore.getState().createForm(nextCommentDefinition, {
-  replace: true,
-});
-```
-
-Replacement is staged before the old runtime is disposed. If staging fails, the
-old form remains live. Once replacement succeeds, old field and form handlers
-cannot mutate the new generation. An old `submit()` handle resolves with
-`{ status: "destroyed" }` after replacement.
-
-Replacement does not cancel side effects that the application's old `onSubmit`
-callback has already started. It prevents their Final Form state from being
-projected into the replacement.
-
-### Inspect
-
-```ts
-const state = useOurStore.getState();
-
-state.hasForm("Comment"); // boolean
-state.getFormApi("Comment"); // vanilla Final Form API | undefined
-```
-
-`getFormApi()` is an escape hatch for advanced Final Form operations. Changes
-made through the returned API are projected back into the Zustand slot while
-the form remains live.
-
-### Destroy one or all
-
-```ts
-useOurStore.getState().destroyForm("Comment"); // true when destroyed
-useOurStore.getState().destroyForm("Comment"); // false when already absent
-
-useOurStore.getState().disposeForms();
-```
-
-Destroying a form unregisters its fields, unsubscribes its projection, releases
-its ID, and sets its dynamic Zustand slot to `undefined`. `disposeForms()` does
-the same for every form owned by that manager.
-
-Long-lived application forms can be initialized once. Route-, modal-, tab-, or
-request-scoped forms should be destroyed by the corresponding application
-orchestration. `zustik-form` will not infer that lifecycle from a React render.
-
-## Action postfixes
-
-An optional action postfix allows more than one set of form-manager commands in
-a store or avoids naming collisions with existing actions.
-
-```ts
-type AdminState = ZustikFormSlice<Forms, "Admin"> & {
-  ready: boolean;
-};
-
-const createAdminForms = zustikFormCreate<
-  Forms,
-  "Admin",
-  AdminState
->("Admin");
-```
-
-This produces:
-
-- `createFormAdmin`;
-- `destroyFormAdmin`;
-- `disposeFormsAdmin`;
-- `getFormApiAdmin`;
-- `hasFormAdmin`.
-
-The postfix affects command names only. Dynamic form slots are still named from
-the form postfix—for example, `zustikFormComment`, not
-`zustikFormCommentAdmin`. Consequently, two managers in the same Zustand store
-cannot both own the same form postfix.
-
-The action postfix follows the same ASCII identifier rule as `formPostfix` and
-is concatenated exactly. PascalCase is recommended for readable action names.
-
-`createZustikFormSlice` is an alias of `zustikFormCreate` for teams that prefer
-the conventional Zustand slice naming style.
-
-## Final Form options
-
-Definitions accept these vanilla Final Form options:
-
-```ts
-defineZustikForm({
-  // ...
-  options: {
-    destroyOnUnregister: false,
-    keepDirtyOnReinitialize: false,
-    validateOnBlur: false,
+fields: {
+  accepted: {
+    component: Checkbox,
+    props: { label: "Accept the terms" },
+    mapProps: ({ field, input, props }) => ({
+      checked: field.value,
+      label: props.label ?? "Accept",
+      name: field.name,
+      onChange: (event) => input.onChange(event.currentTarget.checked),
+    }),
   },
-});
+},
 ```
 
-| Option | Purpose |
-| --- | --- |
-| `destroyOnUnregister` | Controls whether Final Form removes a field value when that field unregisters. |
-| `keepDirtyOnReinitialize` | Preserves dirty values when `initialize()` changes initial values. |
-| `validateOnBlur` | Runs validation on blur rather than on every change. |
+`mapProps` owns the complete final component props object. It receives:
 
-For lower-level capabilities, use the typed API returned by `getFormApi()`.
-`FormApi`, `FormState`, and `FieldState` types are re-exported from Final Form.
+- `props`: static props from the field configuration;
+- `field`: current field state;
+- `input`: raw typed change, focus, and blur actions;
+- `values`: all current input values.
 
-## SSR and hydration
-
-Do not share a mutable singleton store across server requests. Create one store
-and its form-slice manager per request, register the required definitions, and
-dispose it with the request boundary.
-
-For deterministic hydration:
-
-- create the same forms in the same order on server and client if generated IDs
-  are used;
-- preferably provide explicit `formId` values for server-rendered forms;
-- create forms before rendering the selectors that read their optional slots;
-- do not serialize React elements, handlers, Final Form APIs, or complete form
-  slots into the HTML payload;
-- initialize a new client runtime from application data rather than reviving a
-  serialized runtime.
-
-The library does not use `useEffect`, mount detection, or hydration-specific
-branches. SSR ownership remains an application responsibility.
-
-## Zustand persistence and devtools
-
-Form slots intentionally contain functions, component references, and React
-elements. They are view-model snapshots, not a persistence format. Final Form
-runtimes themselves are held in the slice closure and cannot be reconstructed
-from JSON.
-
-When using Zustand `persist`, whitelist durable application state instead of
-persisting the full store:
+If a mapper reads another field, list that path in `dependsOn`. Without
+`dependsOn`, a mapper can rerun for every value change.
 
 ```ts
-persist(appStateCreator, {
-  name: "app",
-  partialize: (state) => ({
-    preferences: state.preferences,
-    draftId: state.draftId,
-  }),
-});
+dependsOn: ["country"],
+mapProps: ({ field, input, props, values }) => ({
+  ...props,
+  disabled: values.country === "",
+  name: field.name,
+  onChange: (value) => input.onChange(value),
+  value: field.value,
+}),
 ```
 
-Recreate forms from definitions and explicitly initialize any values that the
-application chooses to persist. The same caution applies to remote devtools,
-logging, server snapshots, and any middleware that assumes serializable state.
+A mapper failure during an update does not discard the latest form state. The
+last valid element is retained and the error is exposed through:
 
-## Grocery sandbox without an app bundler
+```ts
+form.fields.email.projectionError;
+form.projectionErrors.email;
+form.hasProjectionErrors;
+```
 
-The repository includes a grocery-form sandbox under `examples/grocery/`. It
-is served without Vite, Webpack, Parcel, or another application bundler.
+The next successful projection clears it.
 
-From the repository root:
+## Multiple forms
+
+Create and name one factory per form, then spread each factory into the store or
+feature slice that owns it:
+
+```ts
+const createUserFormSlice = createZustikFormSlice({
+  formPostfix: "User",
+  // ...
+});
+
+const createProductFormSlice = createZustikFormSlice({
+  formPostfix: "Product",
+  // ...
+});
+
+const useStore = create((set, get, store) => ({
+  ...createUserFormSlice(set, get, store),
+  ...createProductFormSlice(set, get, store),
+  ...createOtherFeatureSlice(set, get, store),
+}));
+```
+
+The result contains:
+
+```ts
+state.zustikFormUser;
+state.zustikFormProduct;
+```
+
+Postfixes and form IDs must be unique inside one store. Duplicate static form
+slices are rejected during store creation.
+
+One factory can be used to create multiple stores. Every store receives an
+independent form runtime and independent cloned defaults, which is suitable for
+SSR when a fresh Zustand store is created per request.
+
+## Why static slices?
+
+`0.1.x` optimized for creating an arbitrary registry of forms at runtime. That
+made runtime creation possible, but it also pushed lifecycle decisions into
+unrelated feature actions:
+
+```text
+create manager
+→ create store
+→ decide where to initialize each form
+→ guard against duplicates
+→ create, replace, destroy, and dispose forms
+→ handle optional form slots while rendering
+```
+
+In real application code, that indirection made it harder to answer basic
+questions: where a form is created, whether it exists, which action resets it,
+and which feature owns its lifecycle. It also required a registry type plus the
+entire application state as generic parameters.
+
+`0.2.0` chooses the normal Zustand composition model:
+
+```text
+configure one form
+→ receive one slice factory
+→ spread it where the form belongs
+→ use the always-present form state and actions
+```
+
+Most applications do not need an unbounded number of runtime-defined forms.
+Static factories make the common case declarative, local, and predictable. An
+application that genuinely needs dynamic form factories can still create and
+compose its own stores around `zustik-form`, but that is no longer the public
+pattern the library encourages.
+
+## Migrating from 0.1.x
+
+`0.2.0` is intentionally breaking because the core ownership model changed.
+
+### Before
+
+```ts
+interface Forms {
+  Comment: typeof commentDefinition;
+}
+
+type AppState = ZustikFormSlice<Forms> & OtherState;
+const createFormsSlice = zustikFormCreate<Forms, AppState>();
+
+const useStore = create<AppState>()((set, get, store) => ({
+  ...createFormsSlice(set, get, store),
+  initializeComment: () => get().createForm(commentDefinition),
+}));
+
+useStore.getState().initializeComment();
+
+const form = useStore((state) => state.zustikFormComment?.form);
+```
+
+### After
+
+```ts
+const createCommentFormSlice = createZustikFormSlice({
+  formPostfix: "Comment",
+  defaultValues: { comment: "" },
+  fields: { comment: {} },
+  onSubmit: saveComment,
+});
+
+type AppState =
+  ZustikFormSlice<typeof createCommentFormSlice> & OtherState;
+
+const useStore = create<AppState>()((set, get, store) => ({
+  ...createCommentFormSlice(set, get, store),
+  // other state
+}));
+
+const form = useStore((state) => state.zustikFormComment);
+```
+
+### Removed in 0.2.0
+
+- `zustikFormCreate()` and the dynamic manager.
+- `defineZustikForm()` and `defineZustikField()` identity layers.
+- Form registries and whole-application-state factory generics.
+- Runtime `createForm`, `destroyForm`, `disposeForms`, `hasForm`, and
+  `getFormApi` manager actions.
+- Optional `{ form }` slots.
+- Ordered `components` arrays and `fieldsByName`.
+- `componentProps`, `controlledProps`, and `mapComponentProps` configuration
+  names.
+
+### Replacements
+
+| 0.1.x | 0.2.0 |
+| --- | --- |
+| `zustikFormCreate<Forms, AppState>()` | `createZustikFormSlice(configuration)` |
+| `interface Forms` registry | One named factory per form |
+| `state.createForm(definition)` | Spread the static factory during store creation |
+| `state.zustikFormComment?.form` | `state.zustikFormComment` |
+| `form.fieldsByName.comment` | `form.fields.comment` |
+| `form.components` array | `form.components.comment` keyed element |
+| `field.props` for manual rendering | `form.fieldProps.comment` |
+| `{ id, onSubmit, onReset }` assembled by the app | `form.formProps` |
+| `componentProps` | `props` |
+| `mapComponentProps` | `mapProps` |
+| `getFormApi(postfix)` | `form.api` |
+
+## Form view reference
+
+The state at `zustikForm${formPostfix}` includes:
+
+- Identity: `formId`, `formPostfix`, `formProps`.
+- Values: `values`, `initialValues`.
+- Named projections: `fields`, `fieldProps`, `components`.
+- Validation and submission: `errors`, `error`, `submitErrors`, `submitError`,
+  `valid`, `invalid`, `validating`, `submitting`, `submitFailed`,
+  `submitSucceeded`.
+- Edit metadata: `active`, `dirty`, `pristine`, `dirtyFields`, `touched`,
+  `visited`, `modified`, and their submit-related variants.
+- Actions: `setValue`, `change`, `focus`, `blur`, `initialize`, `reset`,
+  `submit`, `onReset`, `onSubmit`.
+- Advanced access: `api`, `projectionErrors`, `hasProjectionErrors`.
+
+## Value isolation
+
+The factory snapshots `defaultValues` with `structuredClone`, and each store
+invocation clones them again. `initialize()` also clones its input. Mutating a
+source object later cannot mutate a live form or another store instance.
+
+Values may contain nested objects and arrays but must remain
+structured-cloneable data. Functions, weak collections, DOM nodes, React
+elements, and objects that rely on custom class prototypes are not supported as
+form values.
+
+Field definitions and static `props` are shallow-copied because configuration
+may legitimately contain functions and React nodes. Treat nested configuration
+objects as immutable after creating the factory.
+
+## Grocery example
+
+The repository includes a no-bundler React 18 grocery sandbox. It composes two
+static form factories into one vanilla Zustand store:
+
+- one form renders named `fieldProps` through application-owned controls;
+- one form destructures named, fully bound elements from `components`.
+
+Both submit into the same grocery-list slice.
 
 ```sh
 pnpm install
-pnpm run dev
+pnpm dev
 ```
 
-Open the local URL printed by the command. The root `dev` script serves the
-grocery sandbox; there is no need to run a second command inside the example
-directory. The default URL is `http://127.0.0.1:4173`. Stop the server with
-`Ctrl+C`.
-
-The sandbox is intended to make the two consumption styles easy to compare:
-the `groceryFields` tab binds headless field view-models manually, while the
-`groceryComponents` tab renders `form.components` directly. Both are initialized
-by separate tab slices inside one global store and add to the same grocery list.
-A small Node static server, browser import map, and local ESM shims make the
-interaction between the store, form definitions, and browser visible without
-framework build-tool machinery.
-
-## API summary
-
-### Runtime exports
-
-| Export | Purpose |
-| --- | --- |
-| `zustikFormCreate(postfix?)` | Creates the Zustand form-manager slice. |
-| `createZustikFormSlice(postfix?)` | Alias of `zustikFormCreate`. |
-| `defineZustikForm(definition)` | Validates, clones, and preserves the types of a form definition. |
-| `defineZustikField<TValues>()` | Creates a typed identity builder for headless or component field definitions. |
-| `valueFromEvent(event)` | Returns `event.currentTarget.value`. |
-| `checkedFromEvent(event)` | Returns `event.currentTarget.checked`. |
-| `ARRAY_ERROR` | Final Form's array-level error key. |
-| `FORM_ERROR` | Final Form's form-level error key. |
-
-### Default manager actions
-
-| Action | Result |
-| --- | --- |
-| `createForm(definition, options?)` | Creates and returns a form slot; `{ replace: true }` explicitly replaces an existing postfix. |
-| `destroyForm(formPostfix)` | Destroys one live form and returns whether it existed. |
-| `disposeForms()` | Destroys every form owned by this manager. |
-| `getFormApi(formPostfix)` | Returns the live vanilla Final Form API or `undefined`. |
-| `hasForm(formPostfix)` | Reports whether the manager owns a live form. |
-
-All five names receive the optional action postfix when one is supplied.
-
-### Form definition
-
-| Property | Meaning |
-| --- | --- |
-| `formPostfix` | Required dynamic identity and slot-name suffix. |
-| `defaultValues` | Required object containing the input value shape. |
-| `fields` | Required ordered headless/component field definitions. |
-| `onSubmit` | Required callback receiving schema output when validation is configured, or input values otherwise, plus submit context. |
-| `validationSchema` | Optional synchronous or asynchronous Valibot object-input schema. |
-| `onReset` | Optional additional action run after reset is published. |
-| `formId` | Optional explicit HTML-safe ID; otherwise generated per manager. |
-| `options` | Optional Final Form behavior settings. |
-
-### Form view-model
-
-The form view includes:
-
-- identity: `formId`, `formPostfix`;
-- values: `values`, `initialValues`;
-- validation: `valid`, `invalid`, `validating`, `errors`, `error`,
-  `hasValidationErrors`;
-- submission: `submitting`, `submitSucceeded`, `submitFailed`, `submitErrors`,
-  `submitError`, `hasSubmitErrors`, `dirtySinceLastSubmit`,
-  `dirtyFieldsSinceLastSubmit`, `modifiedSinceLastSubmit`;
-- interaction: `active`, `dirty`, `dirtyFields`, `modified`, `touched`,
-  `visited`, `pristine`;
-- projections: `fields`, `fieldsByName`, `components`, `projectionErrors`,
-  `hasProjectionErrors`;
-- commands: `change`, `blur`, `focus`, `initialize`, `submit`, `onSubmit`,
-  `reset`, `onReset`.
-
-Important exported types include `ZustikFormSlice`, `ZustikFormDefinition`,
-`ZustikFormView`, `ZustikFieldView`, `ZustikComponentProps`,
-`ZustikComponentBindingContext`, `ZustikSubmitResult`, `InputOf`, `OutputOf`,
-`FieldPath`, and `FieldPathValue`.
+Open `http://127.0.0.1:4173`.
 
 ## Development
 
-The project uses pnpm and Node's built-in test runner.
-
 ```sh
-pnpm install --frozen-lockfile
-pnpm run typecheck
-pnpm test
-pnpm run check
+pnpm install
+pnpm check
+pnpm pack
 ```
 
-`pnpm test` performs a clean ESM build, checks a consumer through the published
-package export, and runs the runtime suite. `pnpm run check` runs both the
-compile-time public API checks and that complete test pipeline.
+`pnpm check` runs strict TypeScript checks, builds the package, verifies the
+published-package consumer fixture, runs runtime and async tests, and validates
+the browser example.
 
 ## License
 
-[MIT](./LICENSE) © 2026 Zustik Form contributors.
+MIT

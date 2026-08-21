@@ -4,11 +4,7 @@ import test from "node:test";
 import * as v from "valibot";
 import { createStore } from "zustand/vanilla";
 
-import {
-  FORM_ERROR,
-  defineZustikForm,
-  zustikFormCreate,
-} from "../dist/index.js";
+import { FORM_ERROR, createZustikFormSlice } from "../dist/index.js";
 
 function deferred() {
   let resolve;
@@ -24,9 +20,9 @@ function tick() {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
-function createManager() {
-  const slice = zustikFormCreate();
-  return createStore()((set, get, store) => slice(set, get, store));
+function createStaticStore(configuration) {
+  const factory = createZustikFormSlice(configuration);
+  return createStore()((set, get, api) => factory(set, get, api));
 }
 
 test("newest async Valibot validation wins when promises settle out of order", async () => {
@@ -44,20 +40,17 @@ test("newest async Valibot validation wins when promises settle out of order", a
       }, "Not the latest valid value"),
     ),
   });
-  const store = createManager();
-  store.getState().createForm(
-    defineZustikForm({
-      defaultValues: { value: "" },
-      fields: [{ name: "value" }],
-      formPostfix: "Async",
-      onSubmit: () => undefined,
-      validationSchema: schema,
-    }),
-  );
+  const store = createStaticStore({
+    defaultValues: { value: "" },
+    fields: { value: {} },
+    formPostfix: "Async",
+    onSubmit: () => undefined,
+    validationSchema: schema,
+  });
 
-  store.getState().zustikFormAsync.form.change("value", "first");
-  store.getState().zustikFormAsync.form.change("value", "second");
-  assert.equal(store.getState().zustikFormAsync.form.validating, true);
+  store.getState().zustikFormAsync.setValue("value", "first");
+  store.getState().zustikFormAsync.setValue("value", "second");
+  assert.equal(store.getState().zustikFormAsync.validating, true);
 
   gates.get("second").resolve();
   await tick();
@@ -66,48 +59,9 @@ test("newest async Valibot validation wins when promises settle out of order", a
   await tick();
   await tick();
 
-  const form = store.getState().zustikFormAsync.form;
+  const form = store.getState().zustikFormAsync;
   assert.equal(form.values.value, "second");
   assert.equal(form.validating, false);
-  assert.equal(form.valid, true);
-  assert.equal(form.errors, undefined);
-});
-
-test("late validation from a destroyed generation cannot update its replacement", async () => {
-  const gate = deferred();
-  const asyncSchema = v.objectAsync({
-    value: v.pipeAsync(
-      v.string(),
-      v.checkAsync(async () => {
-        await gate.promise;
-        return false;
-      }, "Old error"),
-    ),
-  });
-  const store = createManager();
-  const oldDefinition = defineZustikForm({
-    defaultValues: { value: "old" },
-    fields: [{ name: "value" }],
-    formPostfix: "Race",
-    onSubmit: () => undefined,
-    validationSchema: asyncSchema,
-  });
-  store.getState().createForm(oldDefinition);
-
-  const replacement = defineZustikForm({
-    defaultValues: { value: "new" },
-    fields: [{ name: "value" }],
-    formPostfix: "Race",
-    onSubmit: () => undefined,
-    validationSchema: v.object({ value: v.string() }),
-  });
-  store.getState().createForm(replacement, { replace: true });
-  gate.resolve();
-  await tick();
-  await tick();
-
-  const form = store.getState().zustikFormRace.form;
-  assert.equal(form.values.value, "new");
   assert.equal(form.valid, true);
   assert.equal(form.errors, undefined);
 });
@@ -126,19 +80,16 @@ test("late validation cannot overwrite a reset generation", async () => {
       }, "Old value is invalid"),
     ),
   });
-  const store = createManager();
-  store.getState().createForm(
-    defineZustikForm({
-      defaultValues: { value: "reset" },
-      fields: [{ name: "value" }],
-      formPostfix: "ValidationReset",
-      onSubmit: () => undefined,
-      validationSchema: schema,
-    }),
-  );
+  const store = createStaticStore({
+    defaultValues: { value: "reset" },
+    fields: { value: {} },
+    formPostfix: "ValidationReset",
+    onSubmit: () => undefined,
+    validationSchema: schema,
+  });
 
-  store.getState().zustikFormValidationReset.form.change("value", "bad");
-  const reset = store.getState().zustikFormValidationReset.form.reset();
+  store.getState().zustikFormValidationReset.setValue("value", "bad");
+  const reset = store.getState().zustikFormValidationReset.reset();
   gates.get("reset").resolve();
   await reset;
   await tick();
@@ -146,76 +97,28 @@ test("late validation cannot overwrite a reset generation", async () => {
   await tick();
   await tick();
 
-  const form = store.getState().zustikFormValidationReset.form;
+  const form = store.getState().zustikFormValidationReset;
   assert.equal(form.values.value, "reset");
   assert.equal(form.validating, false);
   assert.equal(form.valid, true);
   assert.equal(form.errors, undefined);
 });
 
-test("pending submission settles harmlessly after replacement", async () => {
-  const gate = deferred();
-  let oldSubmitCalls = 0;
-  const store = createManager();
-  store.getState().createForm(
-    defineZustikForm({
-      defaultValues: { value: "ready" },
-      fields: [{ name: "value" }],
-      formPostfix: "SubmitRace",
-      onSubmit: async () => {
-        oldSubmitCalls += 1;
-        await gate.promise;
-      },
-      validationSchema: v.object({ value: v.string() }),
-    }),
-  );
-
-  const oldForm = store.getState().zustikFormSubmitRace.form;
-  const pendingSubmit = oldForm.submit();
-  assert.equal(
-    store.getState().zustikFormSubmitRace.form.submitting,
-    true,
-  );
-  await tick();
-  assert.equal(oldSubmitCalls, 1);
-
-  store.getState().createForm(
-    defineZustikForm({
-      defaultValues: { value: "replacement" },
-      fields: [{ name: "value" }],
-      formPostfix: "SubmitRace",
-      onSubmit: () => undefined,
-      validationSchema: v.object({ value: v.string() }),
-    }),
-    { replace: true },
-  );
-  gate.resolve();
-
-  assert.deepEqual(await pendingSubmit, { status: "destroyed" });
-  const current = store.getState().zustikFormSubmitRace.form;
-  assert.equal(current.values.value, "replacement");
-  assert.equal(current.submitting, false);
-  assert.equal(current.submitSucceeded, false);
-});
-
 test("deduplicates concurrent public submissions", async () => {
   const gate = deferred();
   let submitCalls = 0;
-  const store = createManager();
-  store.getState().createForm(
-    defineZustikForm({
-      defaultValues: { value: "ready" },
-      fields: [{ name: "value" }],
-      formPostfix: "Concurrent",
-      onSubmit: async () => {
-        submitCalls += 1;
-        await gate.promise;
-      },
-      validationSchema: v.object({ value: v.string() }),
-    }),
-  );
+  const store = createStaticStore({
+    defaultValues: { value: "ready" },
+    fields: { value: {} },
+    formPostfix: "Concurrent",
+    onSubmit: async () => {
+      submitCalls += 1;
+      await gate.promise;
+    },
+    validationSchema: v.object({ value: v.string() }),
+  });
 
-  const form = store.getState().zustikFormConcurrent.form;
+  const form = store.getState().zustikFormConcurrent;
   const first = form.submit();
   const second = form.submit();
   assert.equal(first, second);
@@ -227,108 +130,96 @@ test("deduplicates concurrent public submissions", async () => {
   assert.deepEqual(await second, { status: "succeeded" });
 });
 
-test("reports the callback outcome when reset happens during submission", async () => {
+test("reports callback success when reset happens during submission", async () => {
   const gate = deferred();
-  const store = createManager();
-  store.getState().createForm(
-    defineZustikForm({
-      defaultValues: { value: "ready" },
-      fields: [{ name: "value" }],
-      formPostfix: "ResetDuringSubmit",
-      onSubmit: async () => {
-        await gate.promise;
-      },
-      validationSchema: v.object({ value: v.string() }),
-    }),
-  );
+  const store = createStaticStore({
+    defaultValues: { value: "ready" },
+    fields: { value: {} },
+    formPostfix: "ResetDuringSubmit",
+    onSubmit: async () => {
+      await gate.promise;
+    },
+    validationSchema: v.object({ value: v.string() }),
+  });
 
-  const pending =
-    store.getState().zustikFormResetDuringSubmit.form.submit();
+  const pending = store.getState().zustikFormResetDuringSubmit.submit();
   await tick();
   assert.equal(
-    store.getState().zustikFormResetDuringSubmit.form.submitting,
+    store.getState().zustikFormResetDuringSubmit.submitting,
     true,
   );
-  await store.getState().zustikFormResetDuringSubmit.form.reset();
+  await store.getState().zustikFormResetDuringSubmit.reset();
   gate.resolve();
 
   assert.deepEqual(await pending, { status: "succeeded" });
-  const form = store.getState().zustikFormResetDuringSubmit.form;
+  const form = store.getState().zustikFormResetDuringSubmit;
   assert.equal(form.values.value, "ready");
   assert.equal(form.submitting, false);
 });
 
 test("submission errors resolve into form state while thrown failures reject", async () => {
-  const store = createManager();
-  store.getState().createForm(
-    defineZustikForm({
-      defaultValues: { email: "taken@example.com" },
-      fields: [{ name: "email" }],
-      formPostfix: "ServerError",
-      onSubmit: () => ({ email: "Already registered" }),
-      validationSchema: v.object({ email: v.string() }),
-    }),
-  );
+  const errorStore = createStaticStore({
+    defaultValues: { email: "taken@example.com" },
+    fields: { email: {} },
+    formPostfix: "ServerError",
+    onSubmit: () => ({ email: "Already registered" }),
+    validationSchema: v.object({ email: v.string() }),
+  });
 
-  const result =
-    await store.getState().zustikFormServerError.form.submit();
+  const result = await errorStore.getState().zustikFormServerError.submit();
   assert.deepEqual(result, {
     errors: { email: "Already registered" },
     status: "submission-error",
   });
   assert.equal(
-    store.getState().zustikFormServerError.form.fields[0].submitError,
+    errorStore.getState().zustikFormServerError.fields.email.submitError,
     "Already registered",
   );
 
-  store.getState().createForm(
-    defineZustikForm({
-      defaultValues: { value: "ok" },
-      fields: [{ name: "value" }],
-      formPostfix: "Thrown",
-      onSubmit: () => {
-        throw new Error("network down");
-      },
-      validationSchema: v.object({ value: v.string() }),
-    }),
-  );
+  const thrownStore = createStaticStore({
+    defaultValues: { value: "ok" },
+    fields: { value: {} },
+    formPostfix: "Thrown",
+    onSubmit: () => {
+      throw new Error("network down");
+    },
+    validationSchema: v.object({ value: v.string() }),
+  });
   await assert.rejects(
-    store.getState().zustikFormThrown.form.submit(),
+    thrownStore.getState().zustikFormThrown.submit(),
     /network down/,
   );
-  assert.equal(store.getState().zustikFormThrown.form.submitting, false);
+  assert.equal(thrownStore.getState().zustikFormThrown.submitting, false);
 });
 
 test("async reset callbacks observe reset state and propagate failures", async () => {
   const gate = deferred();
-  const store = createManager();
-  store.getState().createForm(
-    defineZustikForm({
-      defaultValues: { value: "initial" },
-      fields: [{ name: "value" }],
-      formPostfix: "AsyncReset",
-      onReset: async () => {
-        assert.equal(
-          store.getState().zustikFormAsyncReset.form.values.value,
-          "initial",
-        );
-        await gate.promise;
-        throw new Error("reset side effect failed");
-      },
-      onSubmit: () => undefined,
-    }),
-  );
-  store.getState().zustikFormAsyncReset.form.change("value", "changed");
+  let store;
+  store = createStaticStore({
+    defaultValues: { value: "initial" },
+    fields: { value: {} },
+    formPostfix: "AsyncReset",
+    onReset: async () => {
+      assert.equal(
+        store.getState().zustikFormAsyncReset.values.value,
+        "initial",
+      );
+      await gate.promise;
+      throw new Error("reset side effect failed");
+    },
+    onSubmit: () => undefined,
+  });
+  store.getState().zustikFormAsyncReset.setValue("value", "changed");
 
-  const reset = store.getState().zustikFormAsyncReset.form.reset();
+  const reset = store.getState().zustikFormAsyncReset.reset();
   assert.equal(
-    store.getState().zustikFormAsyncReset.form.values.value,
+    store.getState().zustikFormAsyncReset.values.value,
     "initial",
   );
   gate.resolve();
   await assert.rejects(reset, /reset side effect failed/);
   assert.equal(
-    store.getState().zustikFormAsyncReset.form.values.value,
+    store.getState().zustikFormAsyncReset.values.value,
     "initial",
   );
 });
@@ -342,20 +233,17 @@ test("turns rejected schema execution into a settled form-level error", async ()
       }),
     ),
   });
-  const store = createManager();
-  store.getState().createForm(
-    defineZustikForm({
-      defaultValues: { value: "ready" },
-      fields: [{ name: "value" }],
-      formPostfix: "RejectedValidation",
-      onSubmit: () => undefined,
-      validationSchema: schema,
-    }),
-  );
+  const store = createStaticStore({
+    defaultValues: { value: "ready" },
+    fields: { value: {} },
+    formPostfix: "RejectedValidation",
+    onSubmit: () => undefined,
+    validationSchema: schema,
+  });
 
   await tick();
   await tick();
-  const form = store.getState().zustikFormRejectedValidation.form;
+  const form = store.getState().zustikFormRejectedValidation;
   assert.equal(form.validating, false);
   assert.equal(form.valid, false);
   assert.match(String(form.errors[FORM_ERROR]), /validator crashed/);

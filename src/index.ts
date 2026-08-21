@@ -1,14 +1,8 @@
 export {
   checkedFromEvent,
-  defineZustikField,
-  defineZustikForm,
   valueFromEvent,
-  type ZustikFieldBuilder,
 } from "./definition.js";
-export {
-  createZustikFormSlice,
-  zustikFormCreate,
-} from "./slice.js";
+export { createZustikFormSlice } from "./slice.js";
 export {
   ARRAY_ERROR,
   FORM_ERROR,
@@ -18,6 +12,7 @@ export {
 } from "final-form";
 export type {
   AnyZustikSchema,
+  DefinitionOf,
   FieldPath,
   FieldPathValue,
   FieldsOf,
@@ -26,26 +21,27 @@ export type {
   OutputOf,
   PostfixOf,
   PropsOf,
-  RegisteredDefinitionUnion,
   SchemaInput,
   SchemaOutput,
   ZustikComponentBindingContext,
   ZustikComponentFieldDefinition,
   ZustikComponentProps,
-  ZustikCreateFormOptions,
+  ZustikComponentsView,
   ZustikDefaultFieldProps,
   ZustikFieldDefinition,
   ZustikFieldInput,
+  ZustikFieldPropsView,
   ZustikFieldRenderState,
   ZustikFieldsByName,
   ZustikFieldsView,
+  ZustikFieldState,
   ZustikFieldView,
   ZustikFieldViewOf,
   ZustikFormDefinition,
   ZustikFormErrors,
   ZustikFormOptions,
   ZustikFormSlice,
-  ZustikFormSlot,
+  ZustikFormSliceFactory,
   ZustikFormView,
   ZustikHeadlessFieldDefinition,
   ZustikManagedComponentProp,
