@@ -281,10 +281,28 @@ export type ZustikSubmissionErrors<TValues extends object> =
   | SubmissionErrors
   | ZustikFormErrors<TValues>;
 
+export type ZustikStoreSet<TStoreState extends object> =
+  StoreApi<TStoreState>["setState"];
+
+export type ZustikStoreGet<TStoreState extends object> =
+  StoreApi<TStoreState>["getState"];
+
+export type ZustikStoreApi<TStoreState extends object> = StoreApi<TStoreState>;
+
+export interface ZustikStoreContext<TStoreState extends object> {
+  /** The containing Zustand store's set function. */
+  readonly set: ZustikStoreSet<TStoreState>;
+  /** The containing Zustand store's get function. */
+  readonly get: ZustikStoreGet<TStoreState>;
+  /** The complete vanilla Zustand store API. */
+  readonly store: ZustikStoreApi<TStoreState>;
+}
+
 export interface ZustikSubmitContext<
   TInput extends object,
   TPostfix extends string = string,
-> {
+  TStoreState extends object = object,
+> extends ZustikStoreContext<TStoreState> {
   readonly formApi: FormApi<TInput>;
   readonly formId: string;
   readonly formPostfix: TPostfix;
@@ -294,7 +312,8 @@ export interface ZustikSubmitContext<
 export interface ZustikResetContext<
   TInput extends object,
   TPostfix extends string = string,
-> {
+  TStoreState extends object = object,
+> extends ZustikStoreContext<TStoreState> {
   readonly formApi: FormApi<TInput>;
   readonly formId: string;
   readonly formPostfix: TPostfix;
@@ -313,6 +332,7 @@ interface ZustikFormDefinitionBase<
   TInput extends object,
   TOutput,
   TFields extends Readonly<Record<string, object>>,
+  TStoreState extends object,
 > {
   readonly defaultValues: TInput;
   /** Field paths are the keys, so names never need to be repeated. */
@@ -321,11 +341,11 @@ interface ZustikFormDefinitionBase<
   readonly formId?: string;
   readonly formPostfix: TPostfix;
   readonly onReset?: (
-    context: ZustikResetContext<TInput, TPostfix>,
+    context: ZustikResetContext<TInput, TPostfix, TStoreState>,
   ) => MaybePromise<void>;
   readonly onSubmit: (
     values: TOutput,
-    context: ZustikSubmitContext<TInput, TPostfix>,
+    context: ZustikSubmitContext<TInput, TPostfix, TStoreState>,
   ) => MaybePromise<ZustikSubmissionErrors<TInput> | void>;
   readonly options?: Readonly<ZustikFormOptions>;
 }
@@ -336,7 +356,14 @@ export type ZustikFormDefinition<
   TOutput,
   TFields extends Readonly<Record<string, object>>,
   TSchema extends AnyZustikSchema | undefined,
-> = ZustikFormDefinitionBase<TPostfix, TInput, TOutput, TFields> &
+  TStoreState extends object = object,
+> = ZustikFormDefinitionBase<
+  TPostfix,
+  TInput,
+  TOutput,
+  TFields,
+  TStoreState
+> &
   (TSchema extends AnyZustikSchema
     ? { readonly validationSchema: TSchema }
     : { readonly validationSchema?: undefined });
@@ -361,8 +388,11 @@ type SliceOfDefinition<TDefinition> =
     : never;
 
 /** A reusable static Zustand slice creator for one configured form. */
-export interface ZustikFormSliceFactory<TDefinition extends AnyDefinition> {
-  <TState extends SliceOfDefinition<TDefinition>>(
+export interface ZustikFormSliceFactory<
+  TDefinition extends AnyDefinition,
+  TStoreState extends object = object,
+> {
+  <TState extends TStoreState & SliceOfDefinition<TDefinition>>(
     setState: StoreApi<TState>["setState"],
     getState: StoreApi<TState>["getState"],
     store: StoreApi<TState>,
@@ -370,7 +400,7 @@ export interface ZustikFormSliceFactory<TDefinition extends AnyDefinition> {
 }
 
 export type DefinitionOf<TSource> =
-  TSource extends ZustikFormSliceFactory<infer TDefinition>
+  TSource extends ZustikFormSliceFactory<infer TDefinition, infer _TStoreState>
     ? TDefinition
     : TSource;
 
@@ -581,6 +611,73 @@ type LooseFieldDefinition = LooseFieldBase &
 export type LooseFieldsDefinition = Readonly<
   Record<string, LooseFieldDefinition>
 >;
+
+/**
+ * Curried builder used when form lifecycle callbacks need access to their
+ * containing Zustand store. Use the smallest required store contract.
+ */
+export interface ZustikFormSliceBuilder<TStoreState extends object> {
+  <
+    const TPostfix extends string,
+    const TSchema extends AnyZustikSchema,
+    const TFields extends LooseFieldsDefinition,
+  >(
+    definition: Omit<
+      ZustikFormDefinition<
+        TPostfix,
+        SchemaInput<TSchema>,
+        SchemaOutput<TSchema>,
+        TFields,
+        TSchema,
+        TStoreState
+      >,
+      "fields"
+    > & {
+      readonly fields: TFields;
+      readonly validationSchema: TSchema;
+    },
+  ): ZustikFormSliceFactory<
+    ZustikFormDefinition<
+      TPostfix,
+      SchemaInput<TSchema>,
+      SchemaOutput<TSchema>,
+      TFields,
+      TSchema,
+      TStoreState
+    >,
+    TStoreState
+  >;
+
+  <
+    const TPostfix extends string,
+    TInput extends object,
+    const TFields extends LooseFieldsDefinition,
+  >(
+    definition: Omit<
+      ZustikFormDefinition<
+        TPostfix,
+        TInput,
+        TInput,
+        TFields,
+        undefined,
+        TStoreState
+      >,
+      "fields"
+    > & {
+      readonly fields: TFields;
+    },
+  ): ZustikFormSliceFactory<
+    ZustikFormDefinition<
+      TPostfix,
+      TInput,
+      TInput,
+      TFields,
+      undefined,
+      TStoreState
+    >,
+    TStoreState
+  >;
+}
 
 type ValidateField<
   TValues extends object,

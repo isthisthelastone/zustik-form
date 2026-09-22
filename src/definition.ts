@@ -36,8 +36,11 @@ export interface RuntimeDefinition {
     readonly formApi: unknown;
     readonly formId: string;
     readonly formPostfix: string;
+    readonly get: unknown;
     readonly initialValues: Readonly<Record<string, unknown>>;
     readonly previousValues: Readonly<Record<string, unknown>>;
+    readonly set: unknown;
+    readonly store: unknown;
   }) => void | Promise<void>;
   readonly onSubmit: (
     values: unknown,
@@ -45,7 +48,10 @@ export interface RuntimeDefinition {
       readonly formApi: unknown;
       readonly formId: string;
       readonly formPostfix: string;
+      readonly get: unknown;
       readonly inputValues: Readonly<Record<string, unknown>>;
+      readonly set: unknown;
+      readonly store: unknown;
     },
   ) => unknown;
   readonly options?: Readonly<{

@@ -41,6 +41,7 @@ export type {
   ZustikFormErrors,
   ZustikFormOptions,
   ZustikFormSlice,
+  ZustikFormSliceBuilder,
   ZustikFormSliceFactory,
   ZustikFormView,
   ZustikHeadlessFieldDefinition,
@@ -51,4 +52,8 @@ export type {
   ZustikSubmissionErrors,
   ZustikSubmitContext,
   ZustikSubmitResult,
+  ZustikStoreApi,
+  ZustikStoreContext,
+  ZustikStoreGet,
+  ZustikStoreSet,
 } from "./types.js";
