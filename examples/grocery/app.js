@@ -90,6 +90,12 @@ const fieldSpecifications = Object.freeze({
   }),
 });
 
+const renderMetrics = {
+  componentFields: Object.create(null),
+  componentsForm: 0,
+};
+globalThis.zustikRenderMetrics = renderMetrics;
+
 function normalizeIssue(issue) {
   if (typeof issue === "string") return issue;
   if (issue === undefined || issue === null) return "";
@@ -114,13 +120,19 @@ function GroceryComponentField({
   name,
   ...inputProps
 }) {
+  renderMetrics.componentFields[name] =
+    (renderMetrics.componentFields[name] ?? 0) + 1;
   const inputId = `component-${name}`;
   const helpId = `${inputId}-help`;
   const errorId = `${inputId}-error`;
 
   return h(
     "div",
-    { className: `field-shell${invalid ? " field-shell--invalid" : ""}` },
+    {
+      className: `field-shell${invalid ? " field-shell--invalid" : ""}`,
+      "data-field-render-count": renderMetrics.componentFields[name],
+      "data-field-render-name": name,
+    },
     h(
       "div",
       { className: "field-label-row" },
@@ -162,6 +174,7 @@ function mapComponentProps({ field, input, props }) {
 function componentField(name) {
   return {
     component: GroceryComponentField,
+    dependsOn: [],
     mapProps: mapComponentProps,
     props: fieldSpecifications[name],
   };
@@ -196,11 +209,9 @@ function createSharedGrocerySlice(set) {
   };
 }
 
-let groceryStore;
-
 // Each call describes one form once and returns an ordinary static Zustand
 // slice factory. There is no registry, bootstrap action, or runtime creation.
-const createGroceryFieldsFormSlice = createZustikFormSlice({
+const createGroceryFieldsFormSlice = createZustikFormSlice()({
   defaultValues,
   fields: {
     name: {},
@@ -210,16 +221,16 @@ const createGroceryFieldsFormSlice = createZustikFormSlice({
   },
   formId: "grocery-fields-form",
   formPostfix: "groceryFields",
-  onReset: ({ formId }) => {
-    groceryStore.getState().announce(`Reset ${formId} to its default values.`);
+  onReset: ({ formId, get }) => {
+    get().announce(`Reset ${formId} to its default values.`);
   },
-  onSubmit: (values, { formId }) => {
-    groceryStore.getState().addGrocery(values, "field props", formId);
+  onSubmit: (values, { formId, get }) => {
+    get().addGrocery(values, "field props", formId);
   },
   validationSchema: grocerySchema,
 });
 
-const createGroceryComponentsFormSlice = createZustikFormSlice({
+const createGroceryComponentsFormSlice = createZustikFormSlice()({
   defaultValues,
   fields: {
     name: componentField("name"),
@@ -229,28 +240,38 @@ const createGroceryComponentsFormSlice = createZustikFormSlice({
   },
   formId: "grocery-components-form",
   formPostfix: "groceryComponents",
-  onReset: ({ formId }) => {
-    groceryStore.getState().announce(`Reset ${formId} to its default values.`);
+  onReset: ({ formId, get }) => {
+    get().announce(`Reset ${formId} to its default values.`);
   },
-  onSubmit: (values, { formId }) => {
-    groceryStore.getState().addGrocery(values, "generated components", formId);
+  onSubmit: (values, { formId, get }) => {
+    get().addGrocery(values, "generated components", formId);
   },
   validationSchema: grocerySchema,
 });
 
 // Both forms exist as soon as this one vanilla Zustand store exists.
-groceryStore = createStore()((set, get, store) => ({
+const groceryStore = createStore()((set, get, store) => ({
   ...createSharedGrocerySlice(set, get, store),
   ...createGroceryFieldsFormSlice(set, get, store),
   ...createGroceryComponentsFormSlice(set, get, store),
 }));
 globalThis.groceryStore = groceryStore;
 
-function useGroceryStore() {
+function useGroceryStore(selector) {
+  const selectorRef = React.useRef(selector);
+  selectorRef.current = selector;
+  const getSnapshot = React.useCallback(
+    () => selectorRef.current(groceryStore.getState()),
+    [],
+  );
+  const getServerSnapshot = React.useCallback(
+    () => selectorRef.current(groceryStore.getInitialState()),
+    [],
+  );
   return React.useSyncExternalStore(
     groceryStore.subscribe,
-    groceryStore.getState,
-    groceryStore.getInitialState,
+    getSnapshot,
+    getServerSnapshot,
   );
 }
 
@@ -360,7 +381,8 @@ function FormHeader({ description, form, mode, title }) {
   );
 }
 
-function HeadlessForm({ form }) {
+function HeadlessForm() {
+  const form = useGroceryStore((state) => state.zustikFormgroceryFields);
   return h(
     "section",
     {
@@ -396,30 +418,68 @@ function HeadlessForm({ form }) {
   );
 }
 
-function ComponentsForm({ form }) {
-  const { name, price, quantity, storeName } = form.components;
+function ComponentsFormStatus() {
+  const form = useGroceryStore((state) => state.zustikFormgroceryComponents);
+  return h(StatusPills, {
+    form,
+    mode: `${Object.keys(form.components).length} named components`,
+  });
+}
+
+function ComponentsFormButtons() {
+  const form = useGroceryStore((state) => state.zustikFormgroceryComponents);
+  return h(FormButtons, { form });
+}
+
+function ComponentsForm() {
+  renderMetrics.componentsForm += 1;
+  const components = useGroceryStore(
+    (state) => state.zustikFormgroceryComponents.components,
+  );
+  const formId = useGroceryStore(
+    (state) => state.zustikFormgroceryComponents.formId,
+  );
+  const formProps = useGroceryStore(
+    (state) => state.zustikFormgroceryComponents.formProps,
+  );
+  const { name, price, quantity, storeName } = components;
 
   return h(
     "section",
     {
       "aria-labelledby": "tab-components",
       className: "form-panel",
+      "data-form-render-count": renderMetrics.componentsForm,
       id: "panel-components",
       role: "tabpanel",
     },
-    h(FormHeader, {
-      description:
-        "Each field definition carries a component and its static props. The library returns named, fully bound React elements with no render-time props.",
-      form,
-      mode: `${Object.keys(form.components).length} named components`,
-      title: "Render generated components",
-    }),
+    h(
+      React.Fragment,
+      null,
+      h(
+        "div",
+        { className: "panel-heading" },
+        h(
+          "div",
+          null,
+          h("p", { className: "section-kicker" }, "Static form slice"),
+          h("h2", null, "Render generated components"),
+        ),
+        h("code", { className: "form-id" }, `#${formId}`),
+      ),
+      h(
+        "p",
+        { className: "panel-description" },
+        "Each named element is stable. Its field bridge subscribes internally, so this parent does not rerender while typing.",
+      ),
+      h(ComponentsFormStatus),
+    ),
     h(
       "form",
-      { ...form.formProps, noValidate: true },
+      { ...formProps, noValidate: true },
       h("div", { className: "field-grid" }, name, price, quantity, storeName),
     ),
-    h(FormButtons, { form }),
+    h(ComponentsFormButtons),
   );
 }
 
@@ -584,9 +644,12 @@ function ArchitectureStrip() {
 }
 
 function App() {
-  const state = useGroceryStore();
-  const fieldsForm = state.zustikFormgroceryFields;
-  const componentsForm = state.zustikFormgroceryComponents;
+  const activeTab = useGroceryStore((state) => state.activeTab);
+  const clearGroceries = useGroceryStore((state) => state.clearGroceries);
+  const groceries = useGroceryStore((state) => state.groceries);
+  const notice = useGroceryStore((state) => state.notice);
+  const removeGrocery = useGroceryStore((state) => state.removeGrocery);
+  const setActiveTab = useGroceryStore((state) => state.setActiveTab);
 
   return h(
     React.Fragment,
@@ -612,7 +675,7 @@ function App() {
         h(
           "p",
           { className: "hero-description" },
-          "Two static form factories compose into one global Zustand store. React 18 renders either named field props or fully bound elements created under the hood.",
+          "Two store-aware form factories compose into one Zustand store. Generated fields update through stable, field-local React bridges.",
         ),
       ),
       h(
@@ -631,7 +694,7 @@ function App() {
       h(
         "p",
         { "aria-live": "polite", className: "notice" },
-        state.notice,
+        notice,
       ),
       h(
         "div",
@@ -639,15 +702,13 @@ function App() {
         h(
           "div",
           { className: "form-card" },
-          h(Tabs, { activeTab: state.activeTab, onChange: state.setActiveTab }),
-          state.activeTab === "fields"
-            ? h(HeadlessForm, { form: fieldsForm })
-            : h(ComponentsForm, { form: componentsForm }),
+          h(Tabs, { activeTab, onChange: setActiveTab }),
+          activeTab === "fields" ? h(HeadlessForm) : h(ComponentsForm),
         ),
         h(GroceryList, {
-          groceries: state.groceries,
-          onClear: state.clearGroceries,
-          onRemove: state.removeGrocery,
+          groceries,
+          onClear: clearGroceries,
+          onRemove: removeGrocery,
         }),
       ),
     ),

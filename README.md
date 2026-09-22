@@ -20,9 +20,11 @@ zustikForm<UserValidation>
 values · fields · fieldProps · components · actions
 ```
 
-Version `0.2.0` deliberately replaces the dynamic form registry from `0.1.x`.
-See [Why static slices?](#why-static-slices) and
-[Migrating from 0.1.x](#migrating-from-01x).
+Version `0.3.0` adds typed access to the containing Zustand store and stable,
+field-local generated components. The static ownership model introduced in
+`0.2.0` remains unchanged. See [Accessing the containing store](#accessing-the-containing-store),
+[Stable generated components](#stable-generated-components), and
+[Why static slices?](#why-static-slices).
 
 ## What it provides
 
@@ -30,13 +32,14 @@ See [Why static slices?](#why-static-slices) and
 - One source of truth in Zustand; no second React form state.
 - Typed field paths, input values, and Valibot-transformed submit output.
 - A form that exists immediately when its Zustand store is created.
+- Typed `set`, `get`, and vanilla store access in submit and reset callbacks.
 - Named `fieldProps` that can be spread onto your own controls.
-- Named, fully bound React elements when components are configured up front.
+- Named, fully bound React elements with stable parent-facing identity.
 - Ready-to-spread native `formProps` for submit, reset, and ID wiring.
 - Synchronous and asynchronous Valibot validation.
 - Final Form metadata and an escape hatch to its vanilla API.
-- No hooks, context provider, wrapper component, or mount lifecycle inside the
-  library.
+- No context provider, wrapper form component, or application-level mount
+  lifecycle.
 
 ## Requirements
 
@@ -177,6 +180,58 @@ useAppStore.getState().zustikFormUserValidation;
 
 It is not optional, and no bootstrap or `createForm()` action is required.
 
+## Accessing the containing store
+
+When submit or reset logic needs another Zustand slice, create the form through
+the curried store-aware builder. Describe only the state and actions the form
+actually needs; this is an access contract, not a generic for the entire app.
+
+```ts
+type AlertValues = v.InferOutput<typeof AlertSchema>;
+
+interface AlertsStoreAccess {
+  lastSavedId: string | undefined;
+  saveAlert(values: AlertValues): Promise<{ id: string }>;
+}
+
+export const createAlertFormSlice =
+  createZustikFormSlice<AlertsStoreAccess>()({
+    formPostfix: "Alert",
+    validationSchema: AlertSchema,
+    defaultValues: { title: "", message: "" },
+    fields: { title: {}, message: {} },
+    onSubmit: async (values, { get, set, store }) => {
+      const saved = await get().saveAlert(values);
+      set({ lastSavedId: saved.id });
+
+      // The full vanilla API is available when needed.
+      store.getState();
+    },
+    onReset: ({ get }) => {
+      console.log("Reset inside", get());
+    },
+  });
+```
+
+Compose it normally:
+
+```ts
+type AppState =
+  AlertsStoreAccess & ZustikFormSlice<typeof createAlertFormSlice>;
+
+const useAppStore = create<AppState>()((set, get, store) => ({
+  lastSavedId: undefined,
+  saveAlert: api.saveAlert,
+  ...createAlertFormSlice(set, get, store),
+}));
+```
+
+The lifecycle context receives the exact `set`, `get`, and `store` belonging to
+the store that invoked the slice factory. Reusing one form factory in multiple
+stores does not capture or share either store. The direct
+`createZustikFormSlice(configuration)` form remains available when lifecycle
+callbacks do not need typed access to host state.
+
 ## Rendering mode 1: configured components
 
 When a field supplies `component`, `zustik-form` combines its static `props`
@@ -184,20 +239,32 @@ with the live `name`, `value`, `onChange`, `onBlur`, and `onFocus` bindings. It
 returns the resulting keyed React element under the field's name.
 
 ```tsx
+import { useShallow } from "zustand/react/shallow";
+
 import { useAppStore } from "./store.js";
 
+function SubmitButton() {
+  const submitting = useAppStore(
+    (state) => state.zustikFormUserValidation.submitting,
+  );
+  return <button type="submit" disabled={submitting}>Submit</button>;
+}
+
 export function UserValidationForm() {
-  const form = useAppStore((state) => state.zustikFormUserValidation);
-  const { username, password } = form.components;
+  const { components, formProps } = useAppStore(
+    useShallow((state) => ({
+      components: state.zustikFormUserValidation.components,
+      formProps: state.zustikFormUserValidation.formProps,
+    })),
+  );
+  const { username, password } = components;
 
   return (
-    <form {...form.formProps} noValidate>
+    <form {...formProps} noValidate>
       <div>{username}</div>
       <div>{password}</div>
 
-      <button type="submit" disabled={form.submitting}>
-        Submit
-      </button>
+      <SubmitButton />
       <button type="reset">Reset</button>
     </form>
   );
@@ -210,6 +277,22 @@ React keys.
 
 `components` is a keyed object rather than an array. Your JSX determines the
 layout and ordering explicitly.
+
+### Stable generated components
+
+`form.components`, each named element inside it, and `form.formProps` keep the
+same references for the lifetime of that store. Every element renders a small
+field bridge that subscribes to its own resolved props with
+`useSyncExternalStore`.
+
+Consequently, the parent above does not rerender on a keystroke even though the
+active input receives its new value and validation state. Dynamic status UI can
+subscribe in a small child such as `SubmitButton` without rebuilding a table,
+grid, or other parent that composes the generated fields.
+
+Generated elements are opaque renderable values. Do not read or call
+`form.components.username.props`; use `form.fieldProps.username` when current
+props or handlers are needed outside React rendering.
 
 ## Rendering mode 2: named field props
 
@@ -312,9 +395,12 @@ const result = await form.submit();
 - `submit()` validates, parses through Valibot, and invokes the configured
   `onSubmit` callback.
 - Concurrent public `submit()` calls share one pending promise.
+- Store-aware `onSubmit` and `onReset` contexts include the containing store's
+  typed `set`, `get`, and `store` API.
 
 `form.formProps` contains `{ id, onSubmit, onReset }` for a native `<form>`.
-The event handlers call `preventDefault()` and delegate to the same actions.
+Its reference is stable. The event handlers call `preventDefault()` and
+delegate to the same actions.
 
 Submission resolves to one of:
 
@@ -391,6 +477,7 @@ const Checkbox: React.ComponentType<CheckboxProps> = (props) => (
 fields: {
   accepted: {
     component: Checkbox,
+    dependsOn: [],
     props: { label: "Accept the terms" },
     mapProps: ({ field, input, props }) => ({
       checked: field.value,
@@ -409,8 +496,11 @@ fields: {
 - `input`: raw typed change, focus, and blur actions;
 - `values`: all current input values.
 
-If a mapper reads another field, list that path in `dependsOn`. Without
-`dependsOn`, a mapper can rerun for every value change.
+If a mapper reads another field, list that path in `dependsOn`. Use
+`dependsOn: []` when it reads only its own `field`; then unrelated values do not
+update that generated component. Without `dependsOn`, a mapper can rerun for
+every value change because it is allowed to inspect the complete `values`
+object.
 
 ```ts
 dependsOn: ["country"],
@@ -595,6 +685,10 @@ The state at `zustikForm${formPostfix}` includes:
   `submit`, `onReset`, `onSubmit`.
 - Advanced access: `api`, `projectionErrors`, `hasProjectionErrors`.
 
+`components` and `formProps` are stable parent-facing projections.
+`fields`, `fieldProps`, values, and metadata continue to publish fresh
+references when their selected state changes.
+
 ## Value isolation
 
 The factory snapshots `defaultValues` with `structuredClone`, and each store
@@ -619,6 +713,9 @@ static form factories into one vanilla Zustand store:
 - one form destructures named, fully bound elements from `components`.
 
 Both submit into the same grocery-list slice.
+The generated-components tab also exposes render counters on
+`globalThis.zustikRenderMetrics` so parent stability can be inspected while
+typing.
 
 ```sh
 pnpm install

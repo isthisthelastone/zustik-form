@@ -1,7 +1,7 @@
 {
   "name": "zustik-form",
-  "version": "0.2.0",
-  "description": "Static, typed form slices for Zustand, powered by vanilla Final Form, Valibot, and React.",
+  "version": "0.3.0",
+  "description": "Store-aware, typed form slices for Zustand with stable React field components.",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",

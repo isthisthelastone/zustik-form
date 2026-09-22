@@ -1,5 +1,70 @@
 # Changelog
 
+## 0.3.0 — Store-aware definitions and stable components
+
+### Why this release exists
+
+Static form slices made ownership explicit in `0.2.0`, but lifecycle callbacks
+still needed an application-owned store variable when they wanted to call an
+action from another slice. Generated component elements also changed identity
+with their field values, so a parent selecting `form.components` could rerender
+on every keystroke. That was particularly disruptive for table and grid
+components whose children may lose focus when their parent rebuilds.
+
+`0.3.0` connects each form to the Zustand store that contains it and moves
+generated field updates behind stable, field-local React bridges.
+
+### Added
+
+- A typed, curried store-aware form builder:
+
+  ```ts
+  type AlertsStoreAccess = Pick<AppStore, "saveAlert" | "lastSavedAt">;
+
+  const createAlertFormSlice =
+    createZustikFormSlice<AlertsStoreAccess>()({
+      // formId, formPostfix, schema, defaults, and fields
+      onSubmit: async (values, { get, set, store }) => {
+        await get().saveAlert(values);
+        set({ lastSavedAt: Date.now() });
+        store.getState();
+      },
+    });
+  ```
+
+- `set`, `get`, and the vanilla `store` API on both `onSubmit` and `onReset`
+  contexts.
+- `ZustikFormSliceBuilder`, `ZustikStoreContext`, `ZustikStoreSet`,
+  `ZustikStoreGet`, and `ZustikStoreApi` public types.
+- Per-store lifecycle binding: one factory reused in multiple stores always
+  receives the accessors for the store currently creating it.
+
+### Rendering changes
+
+- `form.components` now has stable identity for the lifetime of a store.
+- Every named generated element also keeps stable identity while its internal
+  field bridge subscribes only to its resolved props.
+- Generated controls receive fresh values, handlers, mapped props, and
+  validation state without requiring the parent that rendered the element to
+  rerender.
+- `form.formProps` is now stable as well, so a parent may select both
+  `components` and `formProps` with shallow equality.
+- Mapper dependency behavior is preserved: use `dependsOn` to list other form
+  values consumed by `mapProps`; use `dependsOn: []` when it reads only its own
+  field state.
+
+Generated React elements should be treated as opaque renderable values. Read
+or invoke current control props through `form.fieldProps`, not
+`form.components.someField.props`.
+
+### Compatibility
+
+- The direct `createZustikFormSlice(configuration)` API remains supported.
+- Form state, validation, submission, reset, and headless `fieldProps` behavior
+  remain compatible with `0.2.0`.
+- Applications only need the curried form when lifecycle callbacks require
+  typed access to another part of the containing Zustand store.
+
 ## 0.2.0 — Static form slices
 
 ### Why this release exists

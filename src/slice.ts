@@ -7,7 +7,13 @@ import {
   type FormSubscription,
   type Unsubscribe,
 } from "final-form";
-import { createElement, type ComponentType, type ReactElement } from "react";
+import {
+  createElement,
+  memo,
+  useSyncExternalStore,
+  type ComponentType,
+  type ReactElement,
+} from "react";
 
 import {
   clonePreparedZustikDefinition,
@@ -28,6 +34,7 @@ import type {
   ZustikFieldState,
   ZustikFieldView,
   ZustikFormDefinition,
+  ZustikFormSliceBuilder,
   ZustikFormSliceFactory,
   ZustikFormView,
   ZustikPreventableEvent,
@@ -64,6 +71,10 @@ const FORM_SUBSCRIPTION: Readonly<Required<FormSubscription>> = {
 };
 
 type RuntimeValues = Record<string, unknown>;
+type RuntimeFieldProps = Readonly<Record<string, unknown>>;
+type RuntimeFieldListener = () => void;
+
+const EMPTY_FIELD_PROPS: RuntimeFieldProps = Object.freeze({});
 
 interface RuntimeField {
   readonly componentOnBlur: (...args: readonly unknown[]) => void;
@@ -71,11 +82,22 @@ interface RuntimeField {
   readonly componentOnFocus: (...args: readonly unknown[]) => void;
   readonly definition: RuntimeFieldDefinition;
   element: ReactElement<Record<string, unknown>> | undefined;
+  readonly getPropsSnapshot: () => RuntimeFieldProps;
   readonly input: ZustikFieldInput<unknown>;
   props: Record<string, unknown> | undefined;
+  readonly publishProps: (props: Record<string, unknown>) => void;
   renderSignature: readonly unknown[] | undefined;
   signature: readonly unknown[] | undefined;
+  readonly subscribeProps: (listener: RuntimeFieldListener) => () => void;
   view: ZustikFieldView<unknown, Record<string, unknown>> | undefined;
+}
+
+interface RuntimeFormProps {
+  readonly id: string;
+  readonly onReset: (event?: ZustikPreventableEvent) => Promise<void>;
+  readonly onSubmit: (
+    event?: ZustikPreventableEvent,
+  ) => Promise<ZustikSubmitResult<RuntimeValues>>;
 }
 
 interface RuntimeCommands {
@@ -96,6 +118,12 @@ interface RuntimeSubmitAttempt {
   outcome: ZustikSubmitResult<RuntimeValues> | undefined;
 }
 
+interface RuntimeStoreContext {
+  readonly get: unknown;
+  readonly set: unknown;
+  readonly store: object;
+}
+
 interface FormRuntime {
   active: boolean;
   readonly api: FormApi<RuntimeValues>;
@@ -109,6 +137,8 @@ interface FormRuntime {
         Record<string, ZustikFieldView<unknown, Record<string, unknown>>>
       >
     | undefined;
+  readonly formProps: RuntimeFormProps;
+  readonly hostStore: RuntimeStoreContext;
   pendingForm: ZustikFormView<RuntimeDefinition> | undefined;
   pendingSubmit: Promise<ZustikSubmitResult<RuntimeValues>> | undefined;
   projectionErrorsView: Readonly<Record<string, unknown>> | undefined;
@@ -126,7 +156,6 @@ interface StoreClaims {
 const STORE_CLAIMS = new WeakMap<object, StoreClaims>();
 
 type RuntimeSetState = (partial: Record<string, unknown>) => void;
-
 function claimStoreNames(
   store: object,
   stateKey: string,
@@ -341,6 +370,24 @@ function fieldSignature(
   return signature;
 }
 
+interface BoundZustikFieldProps {
+  readonly field: RuntimeField;
+}
+
+const BoundZustikField = memo(function BoundZustikField({
+  field,
+}: BoundZustikFieldProps): ReactElement | null {
+  const props = useSyncExternalStore(
+    field.subscribeProps,
+    field.getPropsSnapshot,
+    field.getPropsSnapshot,
+  );
+  const Component = field.definition.component;
+  return Component === undefined
+    ? null
+    : createElement(Component, props as Record<string, unknown>);
+});
+
 function createFieldRuntime(
   runtime: FormRuntime,
   definition: RuntimeFieldDefinition,
@@ -358,7 +405,9 @@ function createFieldRuntime(
   };
 
   const userProps = definition.props ?? {};
-  return {
+  const listeners = new Set<RuntimeFieldListener>();
+  let propsSnapshot = EMPTY_FIELD_PROPS;
+  const field: RuntimeField = {
     componentOnBlur: (...args) => {
       if (!runtime.active) return;
       input.onBlur();
@@ -380,12 +429,31 @@ function createFieldRuntime(
     },
     definition,
     element: undefined,
+    getPropsSnapshot: () => propsSnapshot,
     input,
     props: undefined,
+    publishProps: (props) => {
+      if (Object.is(propsSnapshot, props)) return;
+      propsSnapshot = props;
+      field.props = props;
+      for (const listener of listeners) listener();
+    },
     renderSignature: undefined,
     signature: undefined,
+    subscribeProps: (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
     view: undefined,
   };
+  field.element =
+    definition.component === undefined
+      ? undefined
+      : (createElement(BoundZustikField, {
+          field,
+          key: definition.renderKey ?? definition.name,
+        }) as unknown as ReactElement<Record<string, unknown>>);
+  return field;
 }
 
 function projectField(
@@ -432,17 +500,7 @@ function projectField(
               values: formState.values,
             } as ZustikComponentBindingContext<any, any, any>);
       const { key: _key, ref: _ref, ...safeProps } = resolvedProps;
-      field.props = safeProps;
-      field.element =
-        definition.component === undefined
-          ? undefined
-          : (createElement(definition.component, {
-              ...safeProps,
-              key: definition.renderKey ?? definition.name,
-            }) as ReactElement<Record<string, unknown>>);
-      if (field.element !== undefined) {
-        field.props = field.element.props;
-      }
+      field.publishProps(safeProps);
       field.renderSignature = renderSignature;
     } catch (error) {
       if (!runtime.active || field.view === undefined) throw error;
@@ -533,8 +591,11 @@ function createRuntimeCommands(runtime: FormRuntime): RuntimeCommands {
       formApi: runtime.api,
       formId: runtime.definition.formId,
       formPostfix: runtime.definition.formPostfix,
+      get: runtime.hostStore.get,
       initialValues: initialValues as RuntimeValues,
       previousValues,
+      set: runtime.hostStore.set,
+      store: runtime.hostStore.store,
     });
   };
 
@@ -633,11 +694,7 @@ function projectRuntime(
     focus: commands.focus,
     formId: runtime.definition.formId,
     formPostfix: runtime.definition.formPostfix,
-    formProps: {
-      id: runtime.definition.formId,
-      onReset: commands.onReset,
-      onSubmit: commands.onSubmit,
-    },
+    formProps: runtime.formProps,
     hasProjectionErrors: Object.keys(projectionErrors).length > 0,
     hasSubmitErrors: formState.hasSubmitErrors ?? false,
     hasValidationErrors: formState.hasValidationErrors ?? false,
@@ -683,6 +740,7 @@ function disposeRuntime(runtime: FormRuntime): void {
 function stageRuntime(
   definition: RuntimeDefinition,
   publish: (form: ZustikFormView<RuntimeDefinition>) => void,
+  hostStore: RuntimeStoreContext,
 ): FormRuntime {
   let runtime: FormRuntime | undefined;
   const schema = definition.validationSchema;
@@ -724,7 +782,10 @@ function stageRuntime(
         formApi: api,
         formId: definition.formId,
         formPostfix: definition.formPostfix,
+        get: hostStore.get,
         inputValues,
+        set: hostStore.set,
+        store: hostStore.store,
       })) as Record<string, unknown> | undefined;
       if (publicAttempt !== undefined) {
         publicAttempt.outcome =
@@ -757,6 +818,8 @@ function stageRuntime(
     fieldPropsView: undefined,
     fields: undefined,
     fieldsView: undefined,
+    formProps: undefined,
+    hostStore,
     pendingForm: undefined,
     pendingSubmit: undefined,
     projectionErrorsView: undefined,
@@ -768,6 +831,11 @@ function stageRuntime(
   runtime = runtimeShell;
   (runtimeShell as { commands: RuntimeCommands }).commands =
     createRuntimeCommands(runtimeShell);
+  (runtimeShell as { formProps: RuntimeFormProps }).formProps = Object.freeze({
+    id: definition.formId,
+    onReset: runtimeShell.commands.onReset,
+    onSubmit: runtimeShell.commands.onSubmit,
+  });
   (runtimeShell as { fields: readonly RuntimeField[] }).fields =
     definition.fields.map((field) => createFieldRuntime(runtimeShell, field));
 
@@ -817,6 +885,10 @@ function stageRuntime(
 }
 
 export function createZustikFormSlice<
+  TStoreState extends object = object,
+>(): ZustikFormSliceBuilder<TStoreState>;
+
+export function createZustikFormSlice<
   const TPostfix extends string,
   const TSchema extends AnyZustikSchema,
   const TFields extends LooseFieldsDefinition,
@@ -860,17 +932,31 @@ export function createZustikFormSlice<
 >;
 
 /**
- * Creates one static form-slice factory. Calling the returned function during
- * Zustand store creation instantiates one independent Final Form runtime for
- * that store; the configured form is immediately present in the returned slice.
+ * Creates one static form-slice factory. Call with a configuration directly,
+ * or call with a store contract generic first to type the lifecycle context's
+ * set, get, and store accessors. Every containing Zustand store receives an
+ * independent Final Form runtime.
  */
 export function createZustikFormSlice(
-  rawDefinition: object,
-): ZustikFormSliceFactory<any> {
-  const template = prepareZustikDefinition(rawDefinition as never);
+  rawDefinition?: object,
+): ZustikFormSliceFactory<any, any> | ZustikFormSliceBuilder<any> {
+  if (rawDefinition === undefined) {
+    return ((definition: object) => {
+      const template = prepareZustikDefinition(definition as never);
+      return createSliceFromDefinition(template);
+    }) as ZustikFormSliceBuilder<any>;
+  }
 
-  return ((setState, _getState, store) => {
+  const template = prepareZustikDefinition(rawDefinition as never);
+  return createSliceFromDefinition(template);
+}
+
+function createSliceFromDefinition(
+  template: RuntimeDefinition,
+): ZustikFormSliceFactory<any, any> {
+  return ((setState, getState, store) => {
     const definition = clonePreparedZustikDefinition(template);
+
     const stateKey = `zustikForm${definition.formPostfix}`;
     const releaseClaims = claimStoreNames(
       store,
@@ -883,10 +969,14 @@ export function createZustikFormSlice(
     let latestForm: ZustikFormView<RuntimeDefinition> | undefined;
 
     try {
-      const runtime = stageRuntime(definition, (form) => {
-        latestForm = form;
-        if (!initializing) publishState({ [stateKey]: form });
-      });
+      const runtime = stageRuntime(
+        definition,
+        (form) => {
+          latestForm = form;
+          if (!initializing) publishState({ [stateKey]: form });
+        },
+        { get: getState, set: setState, store },
+      );
       const form =
         latestForm ??
         runtime.pendingForm ??
@@ -898,5 +988,5 @@ export function createZustikFormSlice(
       releaseClaims();
       throw error;
     }
-  }) as ZustikFormSliceFactory<any>;
+  }) as ZustikFormSliceFactory<any, any>;
 }

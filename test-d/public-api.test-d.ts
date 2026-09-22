@@ -57,6 +57,47 @@ interface CheckboxProps {
 
 const Checkbox: ComponentType<CheckboxProps> = () => null;
 
+interface HostStoreAccess {
+  count: number;
+  recordLength(length: number): void;
+}
+
+const StoreAwareSchema = v.object({
+  message: v.pipe(
+    v.string(),
+    v.transform((value) => value.length),
+  ),
+});
+
+const createStoreAwareFormSlice = createZustikFormSlice<HostStoreAccess>()({
+  defaultValues: { message: "" },
+  fields: { message: {} },
+  formPostfix: "StoreAware",
+  onSubmit: (values, context) => {
+    const output: number = values.message;
+    const input: string = context.inputValues.message;
+    const hostState: HostStoreAccess = context.get();
+    const storeState: HostStoreAccess = context.store.getState();
+    hostState.recordLength(output);
+    context.set({ count: storeState.count + 1 });
+    void input;
+  },
+  validationSchema: StoreAwareSchema,
+});
+
+type StoreAwareSlice = ZustikFormSlice<typeof createStoreAwareFormSlice>;
+type StoreAwareAppState = HostStoreAccess & StoreAwareSlice;
+
+const storeAwareStore = createStore<StoreAwareAppState>()((set, get, api) => ({
+  count: 0,
+  recordLength: (length) => set({ count: length }),
+  ...createStoreAwareFormSlice(set, get, api),
+}));
+
+const storeAwareMessage: string =
+  storeAwareStore.getState().zustikFormStoreAware.values.message;
+void storeAwareMessage;
+
 const createCommentFormSlice = createZustikFormSlice({
   defaultValues: {
     comment: "",
@@ -216,3 +257,4 @@ type _Plain = Expect<
 >;
 
 void store;
+void storeAwareStore;

@@ -2,13 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { FORM_ERROR } from "final-form";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import * as v from "valibot";
 import { createStore } from "zustand/vanilla";
 
 import { createZustikFormSlice } from "../dist/index.js";
 
-function TextInput() {
-  return null;
+function TextInput({ label: _label, ...props }) {
+  return createElement("input", props);
 }
 
 function makeCommentFactory(overrides = {}) {
@@ -63,17 +65,21 @@ test("creates one always-present static form slice with direct keyed views", () 
     form.fields["profile.displayName"].name,
     "profile.displayName",
   );
-  assert.equal(form.fieldProps.comment, form.components.comment.props);
-  assert.equal(form.components.comment.type, TextInput);
+  assert.equal(form.fields.comment.element, form.components.comment);
+  assert.equal(form.fields.comment.component, TextInput);
   assert.equal(form.components.comment.key, "comment");
-  assert.equal(form.components.comment.props.label, "Comment");
-  assert.equal(form.components.comment.props.value, "");
+  assert.equal(form.fieldProps.comment.label, "Comment");
+  assert.equal(form.fieldProps.comment.value, "");
+  assert.match(
+    renderToStaticMarkup(form.components.comment),
+    /name="comment" value=""/,
+  );
   assert.equal(form.formProps.onReset, form.onReset);
   assert.equal(form.formProps.onSubmit, form.onSubmit);
   assert.equal(form.api.getState().values.comment, "");
 });
 
-test("component elements and fieldProps are fully bound at store creation", () => {
+test("component elements stay stable while their bound props update", () => {
   const trace = [];
   let store;
   const createCommentFormSlice = makeCommentFactory({
@@ -97,20 +103,36 @@ test("component elements and fieldProps are fully bound at store creation", () =
   store = createFormStore(createCommentFormSlice);
 
   const initial = store.getState().zustikFormComment;
+  const initialComponents = initial.components;
+  const initialFormProps = initial.formProps;
   const oldElement = initial.components.comment;
-  oldElement.props.onChange({ currentTarget: { value: "hello" } });
+  let componentSelectionChanges = 0;
+  const unsubscribe = store.subscribe((state) => {
+    if (state.zustikFormComment.components !== initialComponents) {
+      componentSelectionChanges += 1;
+    }
+  });
+  initial.fieldProps.comment.onChange({
+    currentTarget: { value: "hello" },
+  });
 
   let form = store.getState().zustikFormComment;
   assert.equal(form.values.comment, "hello");
   assert.equal(form.fieldProps.comment.value, "hello");
-  assert.equal(form.components.comment.props.value, "hello");
-  assert.notEqual(form.components.comment, oldElement);
+  assert.equal(form.components, initialComponents);
+  assert.equal(form.components.comment, oldElement);
+  assert.equal(form.formProps, initialFormProps);
+  assert.equal(componentSelectionChanges, 0);
+  assert.match(
+    renderToStaticMarkup(oldElement),
+    /name="comment" value="hello"/,
+  );
   assert.deepEqual(trace, [["change", "hello"]]);
 
-  form.components.comment.props.onFocus({ kind: "focus" });
+  form.fieldProps.comment.onFocus({ kind: "focus" });
   form = store.getState().zustikFormComment;
   assert.equal(form.active, "comment");
-  form.components.comment.props.onBlur({ kind: "blur" });
+  form.fieldProps.comment.onBlur({ kind: "blur" });
   form = store.getState().zustikFormComment;
   assert.equal(form.fields.comment.touched, true);
   assert.deepEqual(trace, [
@@ -118,6 +140,42 @@ test("component elements and fieldProps are fully bound at store creation", () =
     ["focus", "focus"],
     ["blur", "blur"],
   ]);
+  unsubscribe();
+});
+
+test("store-aware lifecycle contexts expose the containing Zustand store", async () => {
+  const resetStores = [];
+  const seenStores = [];
+  const factory = createZustikFormSlice()({
+    defaultValues: { message: "" },
+    fields: { message: {} },
+    formPostfix: "StoreAccess",
+    onReset: ({ get, set, store }) => {
+      resetStores.push(store);
+      set({ savedMessage: `reset:${get().owner}` });
+    },
+    onSubmit: (values, { get, set, store }) => {
+      seenStores.push(store);
+      const owner = get().owner;
+      set({ savedMessage: `${owner}:${values.message}` });
+    },
+  });
+  const makeStore = (owner) =>
+    createFormStore(factory, () => ({ owner, savedMessage: "" }));
+  const first = makeStore("first");
+  const second = makeStore("second");
+
+  first.getState().zustikFormStoreAccess.setValue("message", "hello");
+  second.getState().zustikFormStoreAccess.setValue("message", "world");
+  await first.getState().zustikFormStoreAccess.submit();
+  await second.getState().zustikFormStoreAccess.submit();
+
+  assert.equal(first.getState().savedMessage, "first:hello");
+  assert.equal(second.getState().savedMessage, "second:world");
+  assert.deepEqual(seenStores, [first, second]);
+  await first.getState().zustikFormStoreAccess.reset();
+  assert.equal(first.getState().savedMessage, "reset:first");
+  assert.deepEqual(resetStores, [first]);
 });
 
 test("headless fieldProps can be spread directly and use event extraction", () => {
@@ -306,8 +364,8 @@ test("rejects duplicate static postfixes and form IDs in one store", () => {
 });
 
 test("supports mapProps for non-standard controlled components", () => {
-  function Checkbox() {
-    return null;
+  function Checkbox({ color: _color, ...props }) {
+    return createElement("input", { ...props, type: "checkbox" });
   }
 
   const schema = v.pipe(
@@ -335,15 +393,18 @@ test("supports mapProps for non-standard controlled components", () => {
   const store = createFormStore(factory);
 
   let form = store.getState().zustikFormTerms;
+  const components = form.components;
   assert.equal(form.errors[FORM_ERROR], "You must accept");
-  assert.equal(form.components.accepted.props.checked, false);
-  form.components.accepted.props.onChange({
+  assert.equal(form.fieldProps.accepted.checked, false);
+  form.fieldProps.accepted.onChange({
     currentTarget: { checked: true },
   });
   form = store.getState().zustikFormTerms;
   assert.equal(form.values.accepted, true);
   assert.equal(form.valid, true);
-  assert.equal(form.components.accepted.props.checked, true);
+  assert.equal(form.components, components);
+  assert.equal(form.fieldProps.accepted.checked, true);
+  assert.match(renderToStaticMarkup(form.components.accepted), /checked=""/);
 });
 
 test("validates configuration before a store is created", () => {
@@ -517,7 +578,7 @@ test("publishes mapper failures without losing current engine values", () => {
   assert.match(String(form.projectionErrors.value), /mapper exploded/);
   assert.equal(form.fields.value.projectionError.message, "mapper exploded");
   assert.equal(form.components.value, initialElement);
-  assert.equal(form.components.value.props.value, "ready");
+  assert.equal(form.fieldProps.value.value, "ready");
 
   form.setValue("value", "recovered");
   form = store.getState().zustikFormProjection;
@@ -525,7 +586,8 @@ test("publishes mapper failures without losing current engine values", () => {
   assert.equal(form.hasProjectionErrors, false);
   assert.deepEqual({ ...form.projectionErrors }, {});
   assert.equal(form.fields.value.projectionError, undefined);
-  assert.equal(form.components.value.props.value, "recovered");
+  assert.equal(form.components.value, initialElement);
+  assert.equal(form.fieldProps.value.value, "recovered");
 });
 
 test("uses radio values and projects array length metadata", () => {
@@ -541,7 +603,7 @@ test("uses radio values and projects array length metadata", () => {
       onSubmit: () => undefined,
     }),
   );
-  radioStore.getState().zustikFormRadio.components.color.props.onChange({
+  radioStore.getState().zustikFormRadio.fieldProps.color.onChange({
     currentTarget: { checked: true, type: "radio", value: "red" },
   });
   assert.equal(radioStore.getState().zustikFormRadio.values.color, "red");
