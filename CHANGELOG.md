@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.3.1 — Inline slice typing and Valibot subpath
+
+### Why this release exists
+
+`ZustikFormSlice<typeof factory>` keeps inferred form types concise, but it
+requires retaining the factory in a variable. Some stores create and spread a
+one-off form factory inline, where there is no value available for `typeof`.
+
+Valibot was already installed as a normal runtime dependency, while the guide
+still asked applications to install and import it separately. This made the
+package relationship look accidental even though form schemas are part of the
+public workflow.
+
+### Added
+
+- `ManualZustikFormSlice<Configuration>` for declaring an inline form slice
+  from its `formPostfix`, `defaultValues`, and `fields` types.
+- Component-aware manual fields: declaring
+  `{ component: typeof SomeField }` preserves the generated component and
+  `fieldProps` types.
+- A public `zustik-form/valibot` export that re-exports the Valibot dependency
+  resolved for `zustik-form`.
+
+### Compatibility
+
+- `ZustikFormSlice<typeof factory>` and `ReturnType<typeof factory>` remain
+  unchanged and are still preferred for named factories.
+- Direct `valibot` imports remain supported. Applications with a compatible
+  direct dependency can still have it deduplicated by their package manager.
+- No runtime form behavior changed in this release.
+
 ## 0.3.0 — Store-aware definitions and stable components
 
 ### Why this release exists

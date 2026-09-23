@@ -1,6 +1,6 @@
-import * as v from "valibot";
 import { createStore } from "zustand/vanilla";
 import { createZustikFormSlice } from "zustik-form";
+import * as v from "zustik-form/valibot";
 
 const React = globalThis.React;
 const ReactDOM = globalThis.ReactDOM;

@@ -1,6 +1,6 @@
 {
   "name": "zustik-form",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Store-aware, typed form slices for Zustand with stable React field components.",
   "type": "module",
   "main": "./dist/index.js",
@@ -11,6 +11,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./valibot": {
+      "types": "./dist/valibot.d.ts",
+      "import": "./dist/valibot.js",
+      "default": "./dist/valibot.js"
     },
     "./package.json": "./package.json"
   },

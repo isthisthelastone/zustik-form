@@ -20,11 +20,12 @@ zustikForm<UserValidation>
 values · fields · fieldProps · components · actions
 ```
 
-Version `0.3.0` adds typed access to the containing Zustand store and stable,
-field-local generated components. The static ownership model introduced in
-`0.2.0` remains unchanged. See [Accessing the containing store](#accessing-the-containing-store),
-[Stable generated components](#stable-generated-components), and
-[Why static slices?](#why-static-slices).
+Version `0.3.1` adds an explicit type for inline form factories and a public
+Valibot subpath. It builds on the store-aware lifecycle and stable field-local
+components introduced in `0.3.0`. See
+[Typing an inline factory](#typing-an-inline-factory),
+[Accessing the containing store](#accessing-the-containing-store), and
+[Stable generated components](#stable-generated-components).
 
 ## What it provides
 
@@ -32,6 +33,7 @@ field-local generated components. The static ownership model introduced in
 - One source of truth in Zustand; no second React form state.
 - Typed field paths, input values, and Valibot-transformed submit output.
 - A form that exists immediately when its Zustand store is created.
+- Manual slice typing for factories created directly inside a store.
 - Typed `set`, `get`, and vanilla store access in submit and reset callbacks.
 - Named `fieldProps` that can be spread onto your own controls.
 - Named, fully bound React elements with stable parent-facing identity.
@@ -53,11 +55,19 @@ field-local generated components. The static ownership model introduced in
 ## Installation
 
 ```sh
-pnpm add zustik-form react@18.3.1 zustand@^5 valibot
+pnpm add zustik-form react@18.3.1 zustand@^5
 ```
 
-Final Form is an internal dependency. Application code normally imports
-Valibot directly to define schemas.
+Final Form and Valibot are runtime dependencies of `zustik-form`. Import the
+public subpath when Valibot is only needed for form schemas:
+
+```ts
+import * as v from "zustik-form/valibot";
+```
+
+Importing directly from `valibot` remains supported if the application uses it
+outside this library; declare it as a direct application dependency in that
+case. Package managers can deduplicate compatible versions.
 
 ## Quick start
 
@@ -70,12 +80,12 @@ factory.
 
 ```tsx
 import type { ChangeEvent, ComponentType } from "react";
-import * as v from "valibot";
 
 import {
   createZustikFormSlice,
   valueFromEvent,
 } from "zustik-form";
+import * as v from "zustik-form/valibot";
 
 const UserValidationSchema = v.object({
   username: v.pipe(
@@ -171,6 +181,56 @@ export const useAppStore = create<AppState>()((set, get, store) => ({
 `ReturnType<typeof createUserValidationFormSlice>` is equivalent to
 `ZustikFormSlice<typeof createUserValidationFormSlice>` if you prefer the
 built-in TypeScript utility.
+
+### Typing an inline factory
+
+Keeping the factory in a variable gives TypeScript the most concise source of
+truth, but it is not required. Use `ManualZustikFormSlice` when the factory is
+created and spread directly inside a store:
+
+```ts
+import { create } from "zustand";
+import {
+  createZustikFormSlice,
+  type ManualZustikFormSlice,
+} from "zustik-form";
+
+type InlineUserFormSlice = ManualZustikFormSlice<{
+  formPostfix: "InlineUser";
+  defaultValues: {
+    username: string;
+    password: string;
+  };
+  fields: {
+    username: {};
+    password: {};
+  };
+}>;
+
+type InlineAppState = InlineUserFormSlice & {
+  submittedUser: string | undefined;
+};
+
+export const useInlineAppStore = create<InlineAppState>()(
+  (set, get, store) => ({
+    submittedUser: undefined,
+    ...createZustikFormSlice({
+      formPostfix: "InlineUser",
+      defaultValues: { username: "", password: "" },
+      fields: { username: {}, password: {} },
+      onSubmit: ({ username }) => set({ submittedUser: username }),
+    })(set, get, store),
+  }),
+);
+```
+
+The manual configuration type only needs the three parts visible in form
+state: `formPostfix`, `defaultValues`, and `fields`. For a component-backed
+field, use `{ component: typeof TextField }` in the manual `fields` map so its
+`components` and `fieldProps` projections retain the component prop types.
+
+The existing `ZustikFormSlice<typeof factory>` form remains the recommended
+option whenever a named factory already exists.
 
 The form is immediately available at:
 

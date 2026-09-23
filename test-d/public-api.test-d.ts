@@ -9,6 +9,7 @@ import {
   type FieldPath,
   type FieldPathValue,
   type InputOf,
+  type ManualZustikFormSlice,
   type OutputOf,
   type ZustikComponentBindingContext,
   type ZustikFormSlice,
@@ -45,6 +46,53 @@ interface TextFieldProps {
 }
 
 const TextField: ComponentType<TextFieldProps> = () => null;
+
+type ManualInlineFormSlice = ManualZustikFormSlice<{
+  readonly defaultValues: {
+    readonly profile: { readonly displayName: string };
+    readonly title: string;
+  };
+  readonly fields: {
+    readonly "profile.displayName": {};
+    readonly title: { readonly component: typeof TextField };
+  };
+  readonly formPostfix: "InlineManual";
+}>;
+
+type ManualInlineState = ManualInlineFormSlice & {
+  savedTitle: string;
+};
+
+const manualInlineStore = createStore<ManualInlineState>()((set, get, api) => ({
+  savedTitle: "",
+  ...createZustikFormSlice({
+    defaultValues: {
+      profile: { displayName: "" },
+      title: "",
+    },
+    fields: {
+      "profile.displayName": {},
+      title: {
+        component: TextField,
+        props: { fullWidth: true },
+        valueFromChange: valueFromEvent,
+      },
+    },
+    formPostfix: "InlineManual",
+    onSubmit: (values) => set({ savedTitle: values.title }),
+  })(set, get, api),
+}));
+
+const manualInlineForm =
+  manualInlineStore.getState().zustikFormInlineManual;
+const manualTitle: string = manualInlineForm.values.title;
+const manualNestedValue: string =
+  manualInlineForm.fields["profile.displayName"].value;
+const manualTextFieldProps: Readonly<TextFieldProps> =
+  manualInlineForm.fieldProps.title;
+void manualTitle;
+void manualNestedValue;
+void manualTextFieldProps;
 
 interface CheckboxProps {
   checked: boolean;
@@ -258,3 +306,4 @@ type _Plain = Expect<
 
 void store;
 void storeAwareStore;
+void manualInlineStore;
