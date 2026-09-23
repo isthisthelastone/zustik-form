@@ -17,6 +17,7 @@ export type {
   FieldPathValue,
   FieldsOf,
   InputOf,
+  ManualZustikFormSlice,
   MaybePromise,
   OutputOf,
   PostfixOf,

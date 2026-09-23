@@ -77,7 +77,14 @@ const files = new Map([
       "text/javascript; charset=utf-8",
     ],
   ],
-  ...["definition", "index", "slice", "types", "validation"].map(
+  ...[
+    "definition",
+    "index",
+    "slice",
+    "types",
+    "validation",
+    "valibot",
+  ].map(
     (moduleName) => [
       `/library/${moduleName}.js`,
       [

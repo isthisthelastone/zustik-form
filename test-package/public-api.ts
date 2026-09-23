@@ -1,11 +1,12 @@
-import * as v from "valibot";
 import { createStore } from "zustand/vanilla";
 
 import {
   createZustikFormSlice,
   type InputOf,
+  type ManualZustikFormSlice,
   type ZustikFormSlice,
 } from "zustik-form";
+import * as v from "zustik-form/valibot";
 
 interface HostStore {
   saved: string;
@@ -36,3 +37,22 @@ const store = createStore<State>()((set, get, api) => ({
 const values: Readonly<Values> =
   store.getState().zustikFormPackageSmoke.values;
 void values;
+
+type InlineState = ManualZustikFormSlice<{
+  readonly defaultValues: { readonly title: string };
+  readonly fields: { readonly title: {} };
+  readonly formPostfix: "InlinePackageSmoke";
+}>;
+
+const inlineStore = createStore<InlineState>()((set, get, api) => ({
+  ...createZustikFormSlice({
+    defaultValues: { title: "" },
+    fields: { title: {} },
+    formPostfix: "InlinePackageSmoke",
+    onSubmit: () => undefined,
+  })(set, get, api),
+}));
+
+const inlineTitle: string =
+  inlineStore.getState().zustikFormInlinePackageSmoke.values.title;
+void inlineTitle;

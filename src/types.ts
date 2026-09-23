@@ -586,6 +586,14 @@ export interface ZustikFormView<TSource> {
 /** The single, always-present form state contributed by a static factory. */
 export type ZustikFormSlice<TSource> = SliceOfDefinition<DefinitionOf<TSource>>;
 
+/**
+ * The form state contributed by an inline factory, described without keeping
+ * the factory in a variable. Only the postfix, input values, and configured
+ * fields are required because those are the parts visible on the slice.
+ */
+export type ManualZustikFormSlice<TConfiguration extends AnyDefinition> =
+  ZustikFormSlice<TConfiguration>;
+
 interface LooseFieldBase {
   readonly dependsOn?: readonly string[];
   readonly isEqual?: (...args: readonly any[]) => boolean;
